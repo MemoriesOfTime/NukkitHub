@@ -31,6 +31,19 @@ pub fn read_last_sync() -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
+pub fn read_last_sync_with_buffer() -> Option<String> {
+    read_last_sync().and_then(|date_str| {
+        use chrono::NaiveDate;
+
+        NaiveDate::parse_from_str(&date_str, "%Y-%m-%d")
+            .ok()
+            .map(|date| {
+                let buffered_date = date - chrono::Duration::days(7);
+                buffered_date.format("%Y-%m-%d").to_string()
+            })
+    })
+}
+
 pub fn write_last_sync() {
     let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let _ = fs::write(".last_sync", &date);

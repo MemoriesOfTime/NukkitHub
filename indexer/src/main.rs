@@ -3,8 +3,8 @@ use allayindexer::plugin::{delete_plugin, load_plugins, write_plugin};
 use allayindexer::search::build_orama_index;
 use allayindexer::sync::{discover_new_plugins, update_existing_plugins};
 use allayindexer::util::{
-    clear_processed_ids, extract_repo_full_name, has_flag, read_last_sync, read_processed_ids,
-    write_last_sync, write_processed_ids,
+    clear_processed_ids, extract_repo_full_name, has_flag, read_last_sync_with_buffer,
+    read_processed_ids, write_last_sync, write_processed_ids,
 };
 use std::collections::HashSet;
 use std::env;
@@ -258,7 +258,7 @@ fn cmd_discover(args: &[String]) {
         info!("Full scan mode");
         None
     } else {
-        read_last_sync()
+        read_last_sync_with_buffer()
     };
     if let Some(ref date) = last_sync {
         info!(since = %date, "Incremental scan");
