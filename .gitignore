@@ -62,6 +62,7 @@ bun.lockb
 /AllayHubIndex
 **/orama-index.bin
 allayindexer
+allayindexer.exe
 .last_sync
 .data_cache.bin.gz
 .update_progress

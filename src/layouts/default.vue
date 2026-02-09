@@ -85,6 +85,14 @@
               }}</span>
             </nuxt-link>
           </ButtonStyled>
+          <ButtonStyled type="transparent">
+            <nuxt-link to="/indexing-guide">
+              <BookTextIcon aria-hidden="true" />
+              <span class="hidden md:contents">{{
+                formatMessage(navMenuMessages.indexingGuide)
+              }}</span>
+            </nuxt-link>
+          </ButtonStyled>
         </template>
       </div>
       <div class="flex items-center gap-1">
@@ -125,6 +133,10 @@
         @focusout="isMobileMenuOpen = false"
       >
         <div class="links">
+          <NuxtLink class="iconified-button" to="/indexing-guide">
+            <BookTextIcon aria-hidden="true" />
+            {{ formatMessage(navMenuMessages.indexingGuide) }}
+          </NuxtLink>
           <NuxtLink class="iconified-button" to="/settings">
             <SettingsIcon aria-hidden="true" />
             {{ formatMessage(commonMessages.settingsLabel) }}
@@ -173,6 +185,7 @@
 </template>
 <script setup>
 import {
+  BookTextIcon,
   DownloadIcon,
   HomeIcon,
   MoonIcon,
@@ -226,6 +239,10 @@ const navMenuMessages = defineMessages({
   modrinthApp: {
     id: 'layout.nav.allay-launcher',
     defaultMessage: 'Launcher',
+  },
+  indexingGuide: {
+    id: 'layout.nav.indexing-guide',
+    defaultMessage: 'Indexing Guide',
   },
 })
 
