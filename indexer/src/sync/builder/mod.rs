@@ -253,6 +253,63 @@ fn find_gallery_items(tree: &[GitTreeEntry], owner: &str, repo: &str, branch: &s
     gallery
 }
 
+fn is_allay_relevant(content: &str, catalog_aliases: &[String]) -> bool {
+    if content.contains("org.allaymc") {
+        return true;
+    }
+    for alias in catalog_aliases {
+        if content.contains(alias.as_str()) {
+            return true;
+        }
+    }
+    false
+}
+
+fn find_allay_catalog_aliases(
+    tree: &[GitTreeEntry],
+    owner: &str,
+    repo_name: &str,
+) -> Vec<String> {
+    let toml_path = "gradle/libs.versions.toml";
+    if !tree_has_file(tree, toml_path) {
+        return Vec::new();
+    }
+    let content = match client().get_file_content(owner, repo_name, toml_path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    parse_allay_aliases_from_toml(&content)
+}
+
+fn parse_allay_aliases_from_toml(content: &str) -> Vec<String> {
+    let table: toml::Table = match content.parse() {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+    let plugins = match table.get("plugins").and_then(|v| v.as_table()) {
+        Some(t) => t,
+        None => return Vec::new(),
+    };
+    let mut aliases = Vec::new();
+    for (key, value) in plugins {
+        let id = match value {
+            toml::Value::Table(t) => t.get("id").and_then(|v| v.as_str()),
+            toml::Value::String(s) => Some(s.as_str()),
+            _ => None,
+        };
+        if let Some(id) = id {
+            if id.contains("org.allaymc") {
+                let dotted = key.replace('-', ".");
+                if dotted != *key {
+                    aliases.push(dotted);
+                }
+                aliases.push(key.clone());
+            }
+        }
+    }
+    aliases
+}
+
 fn find_first_allay_dsl(
     owner: &str,
     repo_name: &str,
@@ -261,6 +318,9 @@ fn find_first_allay_dsl(
     tree: &[GitTreeEntry],
 ) -> Option<AllayDsl> {
     let mut settings_meta: Option<SettingsMetadata> = None;
+    let catalog_aliases = find_allay_catalog_aliases(tree, owner, repo_name);
+    let mut best_plugin_dsl: Option<AllayDsl> = None;
+    let mut best_dep_dsl: Option<AllayDsl> = None;
 
     for gradle_path in paths {
         let content = match client().get_file_content(owner, repo_name, gradle_path) {
@@ -271,7 +331,7 @@ fn find_first_allay_dsl(
             }
         };
 
-        if !content.contains("org.allaymc") {
+        if !is_allay_relevant(&content, &catalog_aliases) {
             debug!(repo = %full_name, path = %gradle_path, "Skip: no org.allaymc dependency");
             continue;
         }
@@ -314,12 +374,33 @@ fn find_first_allay_dsl(
                 }
             }
 
-        if dsl.plugin.is_some() || dsl.has_allay_dependency {
-            return Some(dsl);
+        if dsl.plugin.is_some() {
+            best_plugin_dsl = Some(dsl);
+            break;
+        } else if dsl.has_allay_dependency && best_dep_dsl.is_none() {
+            best_dep_dsl = Some(dsl);
         }
     }
 
-    None
+    match (best_plugin_dsl, best_dep_dsl) {
+        (Some(mut plugin_dsl), Some(dep_dsl)) => {
+            if plugin_dsl.api.is_none() {
+                plugin_dsl.api = dep_dsl.api;
+                plugin_dsl.api_version_ref = dep_dsl.api_version_ref;
+            }
+            if plugin_dsl.server.is_none() {
+                plugin_dsl.server = dep_dsl.server;
+                plugin_dsl.server_version_ref = dep_dsl.server_version_ref;
+            }
+            if plugin_dsl.api_only.is_none() {
+                plugin_dsl.api_only = dep_dsl.api_only;
+            }
+            Some(plugin_dsl)
+        }
+        (Some(plugin_dsl), None) => Some(plugin_dsl),
+        (None, Some(dep_dsl)) => Some(dep_dsl),
+        (None, None) => None,
+    }
 }
 
 pub fn build_plugins_from_repo(repo: &Repository, gradle_paths: &[String]) -> Vec<Plugin> {
