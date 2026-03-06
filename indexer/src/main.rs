@@ -82,7 +82,7 @@ fn print_usage() {
 fn cmd_build() {
     let _span = info_span!("build").entered();
 
-    let index_dir = Path::new("AllayHubIndex");
+    let index_dir = Path::new("NukkitHubIndex");
     let output_file = Path::new("src/public/orama-index.bin");
     let builder_path = Path::new("orama_builder.mjs");
 
@@ -124,7 +124,7 @@ fn cmd_update(args: &[String]) {
 
     let dry_run = has_flag(args, "--dry-run");
     let force = has_flag(args, "--force");
-    let index_dir = Path::new("AllayHubIndex");
+    let index_dir = Path::new("NukkitHubIndex");
 
     if !index_dir.exists() {
         error!(path = ?index_dir, "Index directory not found");
@@ -234,7 +234,7 @@ fn cmd_discover(args: &[String]) {
     }
 
     let dry_run = has_flag(args, "--dry-run");
-    let index_dir = Path::new("AllayHubIndex");
+    let index_dir = Path::new("NukkitHubIndex");
 
     if !index_dir.exists() {
         error!(path = ?index_dir, "Index directory not found");
