@@ -1,33 +1,27 @@
-use super::builder::build_plugins_from_repo;
+use super::builder::build_plugins_from_nukkit;
 use crate::github::client;
 use crate::plugin::Plugin;
 use chrono::{Datelike, Utc};
 use std::collections::{HashMap, HashSet};
 use tracing::{debug, debug_span, info, info_span, warn};
 
-const CODE_SEARCH_QUERY: &str = "org.allaymc filename:build.gradle -repo:AllayMC/Allay -repo:AllayMC/StateUpdater -repo:AllayMC/EncryptMyPack -repo:AllayMC/AllayGradle -repo:AllayMC/NBT -repo:AllayMC/JavaPluginTemplate -repo:AllayPlus/AllayPlus -repo:MineBuilders/allaymc-kotlin-plugin-template -user:Buddelbubi";
+const CODE_SEARCH_QUERY: &str = "filename:plugin.yml path:src/main/resources language:YAML";
 
-const TOPIC_QUERIES: &[&str] = &["topic:allaymc-plugin fork:true"];
-
-const EXCLUDED_REPOS: &[&str] = &[
-    "AllayMC/Allay",
-    "AllayMC/StateUpdater",
-    "AllayMC/EncryptMyPack",
-    "AllayMC/AllayGradle",
-    "AllayMC/NBT",
-    "AllayMC/JavaPluginTemplate",
-    "AllayPlus/AllayPlus",
-    "MineBuilders/allaymc-kotlin-plugin-template",
+const TOPIC_QUERIES: &[&str] = &[
+    "topic:nukkit-plugin fork:true",
+    "topic:nukkit-mot-plugin fork:true",
 ];
 
-#[derive(Debug, Clone)]
-pub struct RepoMatch {
-    pub full_name: String,
-    pub gradle_paths: Vec<String>,
-}
+const EXCLUDED_REPOS: &[&str] = &[];
 
-const START_YEAR: i32 = 2023;
+const START_YEAR: i32 = 2015;
 const SHARD_LIMIT: u64 = 1000;
+
+#[derive(Debug, Clone)]
+struct RepoMatch {
+    full_name: String,
+    plugin_yml_path: Option<String>,
+}
 
 pub struct DiscoverResult {
     pub new_plugins: Vec<Plugin>,
@@ -104,55 +98,56 @@ fn collect_repo_matches_by_year(existing_repos: &HashSet<String>) -> Vec<RepoMat
         };
 
         for m in matches {
-            repo_map
-                .entry(m.full_name)
-                .or_default()
-                .extend(m.gradle_paths);
+            if let Some(path) = m.plugin_yml_path {
+                repo_map.entry(m.full_name).or_default().push(path);
+            }
         }
     }
 
     repo_map
         .into_iter()
-        .map(|(full_name, mut paths)| {
-            paths.sort();
-            paths.dedup();
-            RepoMatch {
-                full_name,
-                gradle_paths: paths,
-            }
+        .map(|(full_name, paths)| RepoMatch {
+            full_name,
+            plugin_yml_path: paths.into_iter().next(),
         })
         .collect()
 }
 
 fn collect_repo_matches_by_topic(
     existing_repos: &HashSet<String>,
-    pushed_after: Option<&str>,
+    since: Option<&str>,
 ) -> Vec<RepoMatch> {
     let mut repo_map: HashMap<String, Vec<String>> = HashMap::new();
 
     for topic_query in TOPIC_QUERIES {
-        let _span = debug_span!("search_topic", query = %topic_query).entered();
-
-        let query = match pushed_after {
-            Some(date) => format!("{} pushed:>{}", topic_query, date),
-            None => topic_query.to_string(),
+        let query = if let Some(date) = since {
+            format!("{} pushed:>{}", topic_query, date)
+        } else {
+            topic_query.to_string()
         };
 
         for page in 1..=10 {
+            let _span = debug_span!("topic_search", query = %query, page = page).entered();
             match client().search_repositories(&query, page) {
                 Ok(result) => {
-                    for repo in &result.items {
-                        let name = &repo.full_name;
+                    if result.items.is_empty() {
+                        break;
+                    }
 
-                        if EXCLUDED_REPOS.iter().any(|e| e == name) {
-                            debug!(repo = %name, "Skip excluded");
+                    for item in &result.items {
+                        let name = &item.full_name;
+                        if item.fork && !topic_query.contains("fork:true") {
+                            debug!(repo = %name, "Skip fork");
                             continue;
                         }
                         if existing_repos.contains(name) {
                             debug!(repo = %name, "Skip existing");
                             continue;
                         }
-
+                        if EXCLUDED_REPOS.contains(&name.as_str()) {
+                            debug!(repo = %name, "Skip excluded");
+                            continue;
+                        }
                         repo_map.entry(name.clone()).or_default();
                     }
 
@@ -161,7 +156,7 @@ fn collect_repo_matches_by_topic(
                     }
                 }
                 Err(e) => {
-                    warn!(error = %e, page = page, query = %topic_query, "Topic search error");
+                    warn!(error = %e, page = page, query = %query, "Topic search error");
                     break;
                 }
             }
@@ -172,9 +167,9 @@ fn collect_repo_matches_by_topic(
 
     repo_map
         .into_iter()
-        .map(|(full_name, gradle_paths)| RepoMatch {
+        .map(|(full_name, _)| RepoMatch {
             full_name,
-            gradle_paths,
+            plugin_yml_path: None,
         })
         .collect()
 }
@@ -218,6 +213,10 @@ fn collect_repo_matches(
                 debug!(repo = %name, "Skip existing");
                 continue;
             }
+            if EXCLUDED_REPOS.contains(&name.as_str()) {
+                debug!(repo = %name, "Skip excluded");
+                continue;
+            }
             repo_map
                 .entry(name.clone())
                 .or_default()
@@ -249,9 +248,9 @@ fn collect_repo_matches(
 
     Ok(repo_map
         .into_iter()
-        .map(|(full_name, gradle_paths)| RepoMatch {
+        .map(|(full_name, paths)| RepoMatch {
             full_name,
-            gradle_paths,
+            plugin_yml_path: paths.into_iter().find(|p| p.ends_with("plugin.yml")),
         })
         .collect())
 }
@@ -323,42 +322,45 @@ fn process_single_repo(repo_match: RepoMatch) -> Result<Vec<Plugin>, String> {
         return Ok(Vec::new());
     }
 
-    let gradle_paths = if repo_match.gradle_paths.is_empty() {
-        find_gradle_files(parts[0], parts[1], &repo)
-    } else {
-        repo_match.gradle_paths
+    let plugin_yml_path = match repo_match.plugin_yml_path {
+        Some(path) => path,
+        None => {
+            // Try to find plugin.yml in the repository
+            match find_plugin_yml(parts[0], parts[1], &repo) {
+                Some(path) => path,
+                None => {
+                    debug!(repo = %repo_match.full_name, "No plugin.yml found");
+                    return Ok(Vec::new());
+                }
+            }
+        }
     };
 
-    if gradle_paths.is_empty() {
-        debug!(repo = %repo_match.full_name, "No gradle files found");
-        return Ok(Vec::new());
-    }
-
-    let plugins = build_plugins_from_repo(&repo, &gradle_paths);
+    let plugins = build_plugins_from_nukkit(&repo, &plugin_yml_path);
     if plugins.is_empty() {
-        debug!(repo = %repo_match.full_name, "No plugins found");
+        debug!(repo = %repo_match.full_name, "No plugins built");
     }
+    
     Ok(plugins)
 }
 
-fn find_gradle_files(owner: &str, repo_name: &str, repo: &crate::github::Repository) -> Vec<String> {
+fn find_plugin_yml(owner: &str, repo_name: &str, repo: &crate::github::Repository) -> Option<String> {
     let branch = repo.default_branch.as_deref().unwrap_or("main");
 
     match client().get_tree(owner, repo_name, branch) {
         Ok(tree) => {
             tree.tree
                 .iter()
-                .filter(|entry| {
-                    entry.entry_type == "blob"
-                        && (entry.path.ends_with("build.gradle.kts")
-                            || entry.path.ends_with("build.gradle"))
+                .find(|entry| {
+                    entry.entry_type == "blob" 
+                        && entry.path.ends_with("plugin.yml")
+                        && entry.path.contains("src/main/resources")
                 })
                 .map(|entry| entry.path.clone())
-                .collect()
         }
         Err(e) => {
             debug!(repo = %format!("{}/{}", owner, repo_name), error = %e, "Failed to get tree");
-            Vec::new()
+            None
         }
     }
 }

@@ -208,6 +208,7 @@ const filters = computed<FilterType[]>(() => {
         value: 'license:closed-source',
       },
     ],
+
   })
 
   return filterTypes
@@ -257,16 +258,13 @@ function buildSearchFilters() {
 async function performSearch() {
   const filters = buildSearchFilters()
 
-  const results = await search(filters, {
+  const { results, count } = await search(filters, {
     sort: sortType.value,
     page: currentPage.value,
     perPage: perPage.value,
   })
   searchResults.value = results
-
-  // Get total count for pagination
-  const allResults = await search(filters, { limit: 10000 })
-  totalResults.value = allResults.length
+  totalResults.value = count
 }
 
 function scrollToTop(behavior: ScrollBehavior = 'smooth') {
@@ -394,7 +392,7 @@ const ogTitle = computed(
 )
 const description = computed(
   () =>
-    `Search and browse AllayMC plugins on AllayHub with instant, accurate search results. Our filters help you quickly find the best plugins for your server.`,
+    `Search and browse Nukkit plugins on AllayHub with instant, accurate search results. Our filters help you quickly find the best plugins for your server.`,
 )
 
 useSeoMeta({

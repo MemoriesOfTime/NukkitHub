@@ -188,6 +188,11 @@ function toPluginSummary(doc: PluginDocument): AllayIndex.PluginSummary {
   }
 }
 
+export interface PluginSearchResult {
+  results: AllayIndex.PluginSummary[]
+  count: number
+}
+
 /**
  * Plugin search composable
  */
@@ -199,7 +204,7 @@ export function usePluginSearch() {
   async function search(
     filters: SearchFilters = {},
     options: SearchOptions = {},
-  ): Promise<AllayIndex.PluginSummary[]> {
+  ): Promise<PluginSearchResult> {
     const { query, categories, apiMajor, license } = filters
     const { sort = 'downloads', limit, page, perPage = 20 } = options
 
@@ -230,61 +235,45 @@ export function usePluginSearch() {
       })
 
       isIndexLoaded.value = true
-      return results.hits.map(toPluginSummary)
+      return {
+        results: results.hits.map(toPluginSummary),
+        count: results.count,
+      }
     } catch (e) {
       searchError.value = e as Error
       console.error('Search error:', e)
-      return []
+      return { results: [], count: 0 }
     } finally {
       isSearching.value = false
     }
-  }
-
-  async function getTotalCount(filters: SearchFilters = {}): Promise<number> {
-    const { query, categories, apiMajor, license } = filters
-
-    const oramaFilters: OramaSearchFilters = {}
-    if (categories?.length) {
-      oramaFilters.categories = categories
-    }
-    if (license) {
-      oramaFilters.license = license
-    }
-    if (apiMajor !== undefined) {
-      oramaFilters.apiMajor = apiMajor
-    }
-
-    const results = await searchPlugins({
-      term: query?.trim() || '',
-      filters: oramaFilters,
-      limit: 10000,
-    })
-
-    return results.count
   }
 
   async function getByCategory(
     categoryId: string,
     options: SearchOptions = {},
   ): Promise<AllayIndex.PluginSummary[]> {
-    return search(
+    const result = await search(
       { categories: [categoryId] },
       { sort: 'downloads', ...options },
     )
+    return result.results
   }
 
   async function getRecentlyUpdated(
     limit = 10,
   ): Promise<AllayIndex.PluginSummary[]> {
-    return search({}, { sort: 'updated', limit })
+    const result = await search({}, { sort: 'updated', limit })
+    return result.results
   }
 
   async function getPopular(limit = 10): Promise<AllayIndex.PluginSummary[]> {
-    return search({}, { sort: 'downloads', limit })
+    const result = await search({}, { sort: 'downloads', limit })
+    return result.results
   }
 
   async function getFeatured(limit = 10): Promise<AllayIndex.PluginSummary[]> {
-    return search({}, { sort: 'stars', limit })
+    const result = await search({}, { sort: 'stars', limit })
+    return result.results
   }
 
   async function preloadIndex(): Promise<void> {
@@ -301,7 +290,6 @@ export function usePluginSearch() {
     searchError,
     isIndexLoaded,
     search,
-    getTotalCount,
     getByCategory,
     getRecentlyUpdated,
     getPopular,

@@ -1,4 +1,4 @@
-use super::builder::{build_plugins_from_repo, parse_github_url};
+use super::builder::build_plugins_from_nukkit_with_tree;
 use crate::github::client;
 use crate::plugin::Plugin;
 use std::collections::{HashMap, HashSet};
@@ -79,9 +79,18 @@ enum UpdateStatus {
 }
 
 fn update_plugin(plugin: &Plugin, force: bool) -> Result<UpdateStatus, String> {
-    let (owner, repo_name) = match parse_github_url(&plugin.source) {
-        Some(parts) => parts,
-        None => return Ok(UpdateStatus::Unchanged),
+    // Parse GitHub URL to extract owner and repo
+    let (owner, repo_name) = if let Some(url_path) = plugin.source.strip_prefix("https://github.com/") {
+        match url_path.split_once('/') {
+            Some((o, r)) => (o, r),
+            None => return Ok(UpdateStatus::Unchanged),
+        }
+    } else {
+        // Fallback for non-URL format (e.g., "owner/repo")
+        match plugin.source.split_once('/') {
+            Some((o, r)) => (o, r),
+            None => return Ok(UpdateStatus::Unchanged),
+        }
     };
 
     let repo = match client().get_repository(&owner, &repo_name) {
@@ -102,7 +111,26 @@ fn update_plugin(plugin: &Plugin, force: bool) -> Result<UpdateStatus, String> {
         return Ok(UpdateStatus::Deleted);
     }
 
-    let new_plugins = build_plugins_from_repo(&repo, &[]);
+    // Find plugin.yml in repository
+    let tree = match crate::github::client().get_tree(owner, repo_name, &repo.default_branch.clone().unwrap_or_else(|| "main".to_string())) {
+        Ok(t) => t.tree,
+        Err(e) => {
+            return Err(format!("Failed to get tree: {}", e));
+        }
+    };
+
+    let plugin_yml_path = match tree.iter()
+        .find(|e| e.path.ends_with("plugin.yml") && e.path.contains("src/main/resources"))
+        .map(|e| e.path.clone())
+    {
+        Some(path) => path,
+        None => {
+            debug!(id = %plugin.id, "No plugin.yml found in tree, marking deleted");
+            return Ok(UpdateStatus::Deleted);
+        }
+    };
+
+    let new_plugins = build_plugins_from_nukkit_with_tree(&repo, &plugin_yml_path, Some(tree));
 
     let new_plugin = new_plugins.into_iter().find(|p| p.id == plugin.id);
 

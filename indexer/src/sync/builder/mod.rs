@@ -1,8 +1,21 @@
 mod image;
 mod link;
-mod version_resolver;
 
 use crate::github::{Contributor, GitTreeEntry, Release, Repository, client};
+use crate::plugin::{
+    Author, Dependency, GalleryItem, License, Links, Plugin, Version, VersionFile,
+};
+use tracing::debug;
+
+
+fn parse_timestamp(iso_string: &str) -> u64 {
+    use chrono::{DateTime, Utc};
+    DateTime::parse_from_rfc3339(iso_string)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc).timestamp() as u64)
+        .unwrap_or(0)
+}
+
 
 const CATEGORIES: &[&str] = &[
     "adventure",
@@ -25,30 +38,11 @@ const CATEGORIES: &[&str] = &[
     "utility",
     "world-generation",
 ];
-use crate::gradle::{AllayDsl, VersionRef, parse_build_gradle, parse_build_gradle_kts, parse_gradle_settings, parse_plugin_json};
-use crate::plugin::{
-    Author, Dependency, GalleryItem, License, Links, Plugin, Version, VersionFile,
-};
-use tracing::debug;
 
 pub struct PostProcessContext<'a> {
     pub owner: &'a str,
     pub repo: &'a str,
     pub branch: &'a str,
-}
-
-struct PluginBuildInput<'a> {
-    repo: &'a Repository,
-    dsl: &'a AllayDsl,
-    releases: &'a [Release],
-    readme: &'a str,
-    license: &'a License,
-    contributors: &'a [Contributor],
-    owner: &'a str,
-    repo_name: &'a str,
-    branch: &'a str,
-    icon_url: &'a str,
-    repo_gallery: Vec<GalleryItem>,
 }
 
 type ImageProcessorFn = fn(&str, &PostProcessContext, &mut Vec<GalleryItem>) -> String;
@@ -73,30 +67,6 @@ fn process_readme(readme: &str, ctx: &PostProcessContext) -> (String, Vec<Galler
     (content, gallery)
 }
 
-fn gradle_path_to_module(path: &str) -> Option<String> {
-    if let Some(dir) = path.strip_suffix("/build.gradle.kts") {
-        Some(dir.to_string())
-    } else if let Some(dir) = path.strip_suffix("/build.gradle") {
-        Some(dir.to_string())
-    } else if path == "build.gradle.kts" || path == "build.gradle" {
-        Some("root".to_string())
-    } else {
-        None
-    }
-}
-
-fn plugin_json_paths_for_module(module: &str) -> Vec<String> {
-    let base = if module == "root" || module.is_empty() {
-        "src/main/resources".to_string()
-    } else {
-        format!("{}/src/main/resources", module)
-    };
-    vec![
-        format!("{}/plugin.json", base),
-        format!("{}/extension.json", base),
-    ]
-}
-
 fn get_tree(owner: &str, repo: &str, branch: &str) -> Vec<GitTreeEntry> {
     client()
         .get_tree(owner, repo, branch)
@@ -104,306 +74,63 @@ fn get_tree(owner: &str, repo: &str, branch: &str) -> Vec<GitTreeEntry> {
         .unwrap_or_default()
 }
 
-fn find_gradle_paths_from_tree(tree: &[GitTreeEntry]) -> Vec<String> {
-    tree.iter()
-        .filter(|e| {
-            e.entry_type == "blob"
-                && (e.path.ends_with("build.gradle.kts")
-                    || e.path.ends_with("build.gradle"))
-        })
-        .map(|e| e.path.clone())
-        .collect()
-}
-
-fn parse_gradle_file(path: &str, content: &str) -> Option<AllayDsl> {
-    if path.ends_with(".gradle.kts") {
-        parse_build_gradle_kts(content)
-    } else {
-        parse_build_gradle(content)
-    }
-}
-
-fn is_branch_snapshot(version: &str) -> bool {
-    let lower = version.to_lowercase();
-    lower.ends_with("-snapshot") && !lower.chars().next().is_some_and(|c| c.is_ascii_digit())
-}
-
-fn resolve_dsl_versions(dsl: &mut AllayDsl, tree: &[GitTreeEntry], owner: &str, repo: &str) {
-    if !matches!(dsl.api_version_ref, VersionRef::Literal(_))
-        && let Some(v) = version_resolver::resolve_version(&dsl.api_version_ref, tree, owner, repo)
-        {
-            dsl.api = Some(v);
-        }
-
-    if !matches!(dsl.server_version_ref, VersionRef::Literal(_))
-        && let Some(v) =
-            version_resolver::resolve_version(&dsl.server_version_ref, tree, owner, repo)
-        {
-            dsl.server = Some(v);
-        }
-
-    if let Some(api) = &dsl.api
-        && is_branch_snapshot(api)
-            && let Some(v) = version_resolver::resolve_snapshot_version() {
-                dsl.api = Some(v);
-            }
-
-    if let Some(server) = &dsl.server
-        && is_branch_snapshot(server)
-            && let Some(v) = version_resolver::resolve_snapshot_version() {
-                dsl.server = Some(v);
-            }
-}
-
-struct SettingsMetadata {
-    project_name: Option<String>,
-    project_version: Option<String>,
-}
-
-fn find_settings_metadata(
-    owner: &str,
-    repo_name: &str,
+fn find_logo_url(
     tree: &[GitTreeEntry],
-) -> SettingsMetadata {
-    let settings_paths = ["settings.gradle.kts", "settings.gradle"];
-    for path in settings_paths {
-        if tree
-            .iter()
-            .any(|e| e.path == path && e.entry_type == "blob")
-            && let Ok(content) = client().get_file_content(owner, repo_name, path)
-        {
-            let dsl = parse_gradle_settings(path, &content);
-            if dsl.project_name.is_some() || dsl.project_version.is_some() {
-                return SettingsMetadata {
-                    project_name: dsl.project_name,
-                    project_version: dsl.project_version,
-                };
-            }
-        }
-    }
-    SettingsMetadata {
-        project_name: None,
-        project_version: None,
-    }
-}
+    owner: &str,
+    repo: &str,
+    branch: &str,
+) -> Option<String> {
+    let logo_paths = [
+        ".github/img/logo.png",
+        ".github/img/icon.png",
+        "logo.png",
+        "icon.png",
+    ];
 
-fn tree_has_file(tree: &[GitTreeEntry], path: &str) -> bool {
-    tree.iter()
-        .any(|e| e.entry_type == "blob" && e.path == path)
-}
-
-const LOGO_FILENAMES: &[&str] = &[
-    "logo.png",
-    "icon.png",
-    "logo.jpg",
-    "icon.jpg",
-    "logo.svg",
-    "icon.svg",
-    "logo.webp",
-    "icon.webp",
-];
-
-const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "svg", "webp", "gif"];
-
-pub fn to_raw_url(owner: &str, repo: &str, branch: &str, path: &str) -> String {
-    format!(
-        "https://raw.githubusercontent.com/{}/{}/{}/{}",
-        owner, repo, branch, path
-    )
-}
-
-fn find_file_anywhere(tree: &[GitTreeEntry], filename: &str) -> Option<String> {
-    tree.iter()
-        .filter(|e| e.entry_type == "blob")
-        .find(|e| e.path == filename || e.path.ends_with(&format!("/{}", filename)))
-        .map(|e| e.path.clone())
-}
-
-fn find_logo_url(tree: &[GitTreeEntry], owner: &str, repo: &str, branch: &str) -> Option<String> {
-    for filename in LOGO_FILENAMES {
-        if let Some(path) = find_file_anywhere(tree, filename) {
-            return Some(to_raw_url(owner, repo, branch, &path));
+    for path in &logo_paths {
+        if tree.iter().any(|e| e.path == *path) {
+            return Some(format!(
+                "https://raw.githubusercontent.com/{}/{}/{}/{}",
+                owner, repo, branch, path
+            ));
         }
     }
     None
 }
 
-fn find_gallery_items(tree: &[GitTreeEntry], owner: &str, repo: &str, branch: &str) -> Vec<GalleryItem> {
-    let now = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    let mut gallery = Vec::new();
-    for i in 1..=10 {
-        let mut found = false;
-        for ext in IMAGE_EXTENSIONS {
-            let filename = format!("gallery{}.{}", i, ext);
-            if let Some(path) = find_file_anywhere(tree, &filename) {
-                gallery.push(GalleryItem {
-                    url: to_raw_url(owner, repo, branch, &path),
-                    title: format!("Gallery {}", i),
-                    description: String::new(),
-                    created: now.clone(),
-                });
-                found = true;
-                break;
-            }
-        }
-        if !found {
-            break;
-        }
-    }
-    gallery
-}
-
-fn is_allay_relevant(content: &str, catalog_aliases: &[String]) -> bool {
-    if content.contains("org.allaymc") {
-        return true;
-    }
-    for alias in catalog_aliases {
-        if content.contains(alias.as_str()) {
-            return true;
-        }
-    }
-    false
-}
-
-fn find_allay_catalog_aliases(
+fn find_gallery_items(
     tree: &[GitTreeEntry],
     owner: &str,
-    repo_name: &str,
-) -> Vec<String> {
-    let toml_path = "gradle/libs.versions.toml";
-    if !tree_has_file(tree, toml_path) {
-        return Vec::new();
-    }
-    let content = match client().get_file_content(owner, repo_name, toml_path) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-    parse_allay_aliases_from_toml(&content)
+    repo: &str,
+    branch: &str,
+) -> Vec<GalleryItem> {
+    let gallery_dir = ".github/img/";
+    let excluded = ["logo.png", "icon.png"];
+
+    tree.iter()
+        .filter(|e| {
+            e.entry_type == "blob"
+                && e.path.starts_with(gallery_dir)
+                && e.path.ends_with(".png")
+                && !excluded.iter().any(|ex| e.path.ends_with(ex))
+        })
+        .map(|e| GalleryItem {
+            url: format!(
+                "https://raw.githubusercontent.com/{}/{}/{}/{}",
+                owner, repo, branch, e.path
+            ),
+            title: String::new(),
+            description: String::new(),
+            created: String::new(),
+        })
+        .collect()
 }
 
-fn parse_allay_aliases_from_toml(content: &str) -> Vec<String> {
-    let table: toml::Table = match content.parse() {
-        Ok(t) => t,
-        Err(_) => return Vec::new(),
-    };
-    let plugins = match table.get("plugins").and_then(|v| v.as_table()) {
-        Some(t) => t,
-        None => return Vec::new(),
-    };
-    let mut aliases = Vec::new();
-    for (key, value) in plugins {
-        let id = match value {
-            toml::Value::Table(t) => t.get("id").and_then(|v| v.as_str()),
-            toml::Value::String(s) => Some(s.as_str()),
-            _ => None,
-        };
-        if let Some(id) = id {
-            if id.contains("org.allaymc") {
-                let dotted = key.replace('-', ".");
-                if dotted != *key {
-                    aliases.push(dotted);
-                }
-                aliases.push(key.clone());
-            }
-        }
-    }
-    aliases
+pub fn build_plugins_from_nukkit(repo: &Repository, plugin_yml_path: &str) -> Vec<Plugin> {
+    build_plugins_from_nukkit_with_tree(repo, plugin_yml_path, None)
 }
 
-fn find_first_allay_dsl(
-    owner: &str,
-    repo_name: &str,
-    paths: &[String],
-    full_name: &str,
-    tree: &[GitTreeEntry],
-) -> Option<AllayDsl> {
-    let mut settings_meta: Option<SettingsMetadata> = None;
-    let catalog_aliases = find_allay_catalog_aliases(tree, owner, repo_name);
-    let mut best_plugin_dsl: Option<AllayDsl> = None;
-    let mut best_dep_dsl: Option<AllayDsl> = None;
-
-    for gradle_path in paths {
-        let content = match client().get_file_content(owner, repo_name, gradle_path) {
-            Ok(c) => c,
-            Err(e) => {
-                debug!(repo = %full_name, path = %gradle_path, error = %e, "Skip: failed to get gradle file");
-                continue;
-            }
-        };
-
-        if !is_allay_relevant(&content, &catalog_aliases) {
-            debug!(repo = %full_name, path = %gradle_path, "Skip: no org.allaymc dependency");
-            continue;
-        }
-
-        let mut dsl = match parse_gradle_file(gradle_path, &content) {
-            Some(d) => d,
-            None => {
-                debug!(repo = %full_name, path = %gradle_path, "Skip: failed to parse gradle file");
-                continue;
-            }
-        };
-
-        let meta = settings_meta.get_or_insert_with(|| {
-            find_settings_metadata(owner, repo_name, tree)
-        });
-        if dsl.project_name.is_none() {
-            dsl.project_name = meta.project_name.clone();
-        }
-        if dsl.project_version.is_none() {
-            dsl.project_version = meta.project_version.clone();
-        }
-
-        if dsl.plugin.is_none() && dsl.has_allay_dependency
-            && let Some(module) = gradle_path_to_module(gradle_path) {
-                for json_path in plugin_json_paths_for_module(&module) {
-                    if !tree_has_file(tree, &json_path) {
-                        continue;
-                    }
-                    if let Ok(json_content) =
-                        client().get_file_content(owner, repo_name, &json_path)
-                        && let Some(json) = parse_plugin_json(&json_content)
-                            && json.entrance.is_some() {
-                                dsl.plugin = Some(json.into_plugin_dsl(
-                                    dsl.project_name.as_deref(),
-                                    dsl.project_version.as_deref(),
-                                    dsl.project_description.as_deref(),
-                                ));
-                                break;
-                            }
-                }
-            }
-
-        if dsl.plugin.is_some() {
-            best_plugin_dsl = Some(dsl);
-            break;
-        } else if dsl.has_allay_dependency && best_dep_dsl.is_none() {
-            best_dep_dsl = Some(dsl);
-        }
-    }
-
-    match (best_plugin_dsl, best_dep_dsl) {
-        (Some(mut plugin_dsl), Some(dep_dsl)) => {
-            if plugin_dsl.api.is_none() {
-                plugin_dsl.api = dep_dsl.api;
-                plugin_dsl.api_version_ref = dep_dsl.api_version_ref;
-            }
-            if plugin_dsl.server.is_none() {
-                plugin_dsl.server = dep_dsl.server;
-                plugin_dsl.server_version_ref = dep_dsl.server_version_ref;
-            }
-            if plugin_dsl.api_only.is_none() {
-                plugin_dsl.api_only = dep_dsl.api_only;
-            }
-            Some(plugin_dsl)
-        }
-        (Some(plugin_dsl), None) => Some(plugin_dsl),
-        (None, Some(dep_dsl)) => Some(dep_dsl),
-        (None, None) => None,
-    }
-}
-
-pub fn build_plugins_from_repo(repo: &Repository, gradle_paths: &[String]) -> Vec<Plugin> {
+pub fn build_plugins_from_nukkit_with_tree(repo: &Repository, plugin_yml_path: &str, prefetched_tree: Option<Vec<GitTreeEntry>>) -> Vec<Plugin> {
     let (owner, repo_name) = match repo.full_name.split_once('/') {
         Some((o, r)) => (o, r),
         None => {
@@ -414,24 +141,21 @@ pub fn build_plugins_from_repo(repo: &Repository, gradle_paths: &[String]) -> Ve
 
     let default_branch = repo.default_branch.as_deref().unwrap_or("main");
 
-    let tree = get_tree(owner, repo_name, default_branch);
-
-    let paths_to_check = if gradle_paths.is_empty() {
-        find_gradle_paths_from_tree(&tree)
-    } else {
-        gradle_paths.to_vec()
+    let yml_content = match client().get_file_content(owner, repo_name, plugin_yml_path) {
+        Ok(content) => content,
+        Err(e) => {
+            debug!(repo = %repo.full_name, error = %e, "Failed to read plugin.yml");
+            return Vec::new();
+        }
     };
 
-    let mut dsl =
-        match find_first_allay_dsl(owner, repo_name, &paths_to_check, &repo.full_name, &tree) {
-            Some(d) => d,
-            None => {
-                debug!(repo = %repo.full_name, "Skip: no valid gradle modules found");
-                return Vec::new();
-            }
-        };
-
-    resolve_dsl_versions(&mut dsl, &tree, owner, repo_name);
+    let nukkit_yml = match crate::nukkit::NukkitPluginYml::from_str(&yml_content) {
+        Ok(yml) => yml,
+        Err(e) => {
+            debug!(repo = %repo.full_name, error = %e, "Failed to parse plugin.yml");
+            return Vec::new();
+        }
+    };
 
     let releases = client().get_releases(owner, repo_name).unwrap_or_default();
     let readme = client().get_readme(owner, repo_name).unwrap_or_default();
@@ -456,8 +180,7 @@ pub fn build_plugins_from_repo(repo: &Repository, gradle_paths: &[String]) -> Ve
             } else if is_valid_spdx {
                 format!("https://spdx.org/licenses/{}.html", spdx_id)
             } else {
-                let branch = repo.default_branch.as_deref().unwrap_or("main");
-                format!("{}/blob/{}/LICENSE", repo.html_url, branch)
+                format!("{}/blob/{}/LICENSE", repo.html_url, default_branch)
             };
 
             License {
@@ -468,124 +191,127 @@ pub fn build_plugins_from_repo(repo: &Repository, gradle_paths: &[String]) -> Ve
         },
     );
 
+    let tree = prefetched_tree.unwrap_or_else(|| get_tree(owner, repo_name, default_branch));
     let icon_url = find_logo_url(&tree, owner, repo_name, default_branch)
         .unwrap_or_else(|| repo.owner.avatar_url.clone());
     let repo_gallery = find_gallery_items(&tree, owner, repo_name, default_branch);
-
-    let input = PluginBuildInput {
+    
+    match nukkit_yml_to_plugin(
+        nukkit_yml,
         repo,
-        dsl: &dsl,
-        releases: &releases,
-        readme: &readme,
-        license: &license,
-        contributors: &contributors,
+        &releases,
+        &readme,
+        &license,
+        &contributors,
         owner,
         repo_name,
-        branch: default_branch,
-        icon_url: &icon_url,
+        default_branch,
+        &icon_url,
         repo_gallery,
-    };
-
-    match build_plugin_from_repo_data(input) {
+    ) {
         Some(plugin) => vec![plugin],
         None => Vec::new(),
     }
 }
 
-fn build_plugin_from_repo_data(input: PluginBuildInput) -> Option<Plugin> {
-    let PluginBuildInput {
-        repo,
-        dsl,
-        releases,
-        readme,
-        license,
-        contributors,
-        owner,
-        repo_name,
-        branch,
-        icon_url,
-        repo_gallery,
-    } = input;
-    let plugin_dsl = match dsl.plugin.as_ref() {
-        Some(p) => p,
-        None => {
-            debug!(repo = %repo.full_name, "Skip: no plugin DSL");
-            return None;
-        }
-    };
-
-    let plugin_name = plugin_dsl.name.clone().unwrap_or_else(|| repo.name.clone());
-
-    let plugin_id = format!("{}/{}", owner, plugin_name).to_lowercase();
-
-    let versions: Vec<Version> = releases
-        .iter()
-        .filter(|r| !r.draft)
-        .map(build_version)
-        .filter(|v| !v.files.is_empty())
-        .collect();
-
-    let total_downloads: u64 = versions.iter().map(|v| v.downloads).sum();
-
-    let summary = plugin_dsl
-        .description
-        .clone()
-        .or_else(|| repo.description.clone())
-        .unwrap_or_default();
-
-    let website = plugin_dsl.website.clone().unwrap_or_default();
-
-    let authors = build_authors(plugin_dsl, repo, contributors);
-
+fn nukkit_yml_to_plugin(
+    yml: crate::nukkit::NukkitPluginYml,
+    repo: &Repository,
+    releases: &[Release],
+    readme: &str,
+    license: &License,
+    _contributors: &[Contributor],
+    owner: &str,
+    repo_name: &str,
+    branch: &str,
+    icon_url: &str,
+    repo_gallery: Vec<GalleryItem>,
+) -> Option<Plugin> {
     let ctx = PostProcessContext {
         owner,
         repo: repo_name,
         branch,
     };
-    let (processed_readme, readme_gallery) = process_readme(readme, &ctx);
-
-    let mut gallery = repo_gallery;
-    let existing_urls: std::collections::HashSet<String> =
-        gallery.iter().map(|g| g.url.clone()).collect();
-    for item in readme_gallery {
-        if !existing_urls.contains(&item.url) {
-            gallery.push(item);
-        }
-    }
-
-    let api_version = dsl
-        .api
-        .clone()
-        .or_else(|| plugin_dsl.api_version.clone())
-        .unwrap_or_default();
-
-    let server_version = dsl.server.clone().unwrap_or_default();
-
-    let dependencies: Vec<Dependency> = plugin_dsl
-        .dependencies
-        .iter()
-        .map(|d| Dependency {
-            plugin_id: d.name.to_lowercase(),
-            version_range: d.version.clone().unwrap_or_default(),
-            dependency_type: if d.optional { "optional" } else { "required" }.to_string(),
+    
+    let (processed_readme, mut gallery) = process_readme(readme, &ctx);
+    gallery.extend(repo_gallery);
+    
+    let authors = yml.authors.as_vec().into_iter()
+        .map(|name| Author {
+            name,
+            url: String::new(),
+            avatar_url: String::new(),
         })
         .collect();
-
+    
+    let mut all_dependencies: Vec<Dependency> = yml.depend.iter()
+        .map(|name| Dependency {
+            plugin_id: name.clone(),
+            version_range: String::new(),
+            dependency_type: "required".to_string(),
+        })
+        .collect();
+    
+    all_dependencies.extend(yml.softdepend.iter().map(|name| Dependency {
+        plugin_id: name.clone(),
+        version_range: String::new(),
+        dependency_type: "optional".to_string(),
+    }));
+    
+    // Build versions from releases
+    let versions: Vec<Version> = releases.iter()
+        .map(|release| {
+            let files: Vec<VersionFile> = release.assets.iter()
+                .filter(|a| a.name.ends_with(".jar"))
+                .map(|a| VersionFile {
+                    filename: a.name.clone(),
+                    url: a.browser_download_url.clone(),
+                    size: a.size,
+                    primary: true,
+                })
+                .collect();
+            
+            Version {
+                version: release.tag_name.clone(),
+                name: release.name.clone().unwrap_or_else(|| release.tag_name.clone()),
+                prerelease: release.prerelease,
+                changelog: release.body.clone().unwrap_or_default(),
+                files,
+                downloads: 0,
+                published_at: parse_timestamp(&release.published_at.clone().unwrap_or_default()),
+            }
+        })
+        .collect();
+    
+    let api_version = yml.api.primary().unwrap_or_default();
+    
+    let categories: Vec<String> = repo.topics.iter()
+        .filter_map(|t| {
+            // Strip "nukkit-" prefix if present
+            let normalized = t.strip_prefix("nukkit-").unwrap_or(t);
+            if CATEGORIES.contains(&normalized) {
+                Some(normalized.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+    
     Some(Plugin {
-        id: plugin_id,
-        name: plugin_name,
+        id: format!("{}/{}", owner, repo_name),
+        name: yml.name,
         source: repo.html_url.clone(),
-        summary,
+        summary: yml.description.clone().unwrap_or_default(),
         description: processed_readme,
         authors,
-        categories: build_categories(&repo.topics),
+        categories,
         license: license.clone(),
-        links: Some(Links {
-            homepage: website,
+        links: yml.website.as_ref().map(|w| Links {
+            homepage: w.clone(),
             wiki: String::new(),
             discord: String::new(),
         }),
-        downloads: total_downloads,
+        downloads: 0,
         stars: repo.stargazers_count,
         created_at: parse_timestamp(&repo.created_at),
         updated_at: parse_timestamp(&repo.updated_at),
@@ -593,115 +319,21 @@ fn build_plugin_from_repo_data(input: PluginBuildInput) -> Option<Plugin> {
         gallery,
         versions,
         api_version,
-        server_version,
-        dependencies,
+        server_version: String::new(),
+        dependencies: all_dependencies,
         preserved_fields: Default::default(),
     })
 }
 
-fn build_version(release: &Release) -> Version {
-    let jars: Vec<_> = release
-        .assets
-        .iter()
-        .filter(|a| a.name.ends_with(".jar") || a.name.ends_with(".zip"))
-        .collect();
-
-    let primary_jar = jars
-        .iter()
-        .find(|a| a.name.to_lowercase().contains("allay"))
-        .or_else(|| jars.first())
-        .map(|a| a.name.as_str());
-
-    let files: Vec<VersionFile> = jars
-        .iter()
-        .map(|a| VersionFile {
-            filename: a.name.clone(),
-            url: a.browser_download_url.clone(),
-            size: a.size,
-            primary: primary_jar == Some(a.name.as_str()),
-        })
-        .collect();
-
-    let total_downloads: u64 = jars.iter().map(|a| a.download_count).sum();
-
-    Version {
-        version: normalize_version(&release.tag_name),
-        name: release.name.clone().unwrap_or_else(|| release.tag_name.clone()),
-        prerelease: release.prerelease,
-        changelog: release.body.clone().unwrap_or_default(),
-        files,
-        downloads: total_downloads,
-        published_at: parse_timestamp(&release.published_at),
-    }
-}
-
-fn build_categories(topics: &[String]) -> Vec<String> {
-    let valid_ids: std::collections::HashSet<&str> = CATEGORIES.iter().copied().collect();
-    let categories: Vec<String> = topics
-        .iter()
-        .filter(|t| valid_ids.contains(t.as_str()))
-        .cloned()
-        .collect();
-    if categories.is_empty() {
-        vec!["utility".to_string()]
-    } else {
-        categories
-    }
-}
-
-fn build_authors(
-    plugin_dsl: &crate::gradle::PluginDsl,
-    repo: &Repository,
-    contributors: &[Contributor],
-) -> Vec<Author> {
-    let mut authors = vec![Author {
-        name: repo.owner.login.clone(),
-        url: repo.owner.html_url.clone(),
-        avatar_url: repo.owner.avatar_url.clone(),
-    }];
-
-    let owner_lower = repo.owner.login.to_lowercase();
-    for name in &plugin_dsl.authors {
-        let name_lower = name.to_lowercase();
-        if name_lower == owner_lower {
-            continue;
-        }
-
-        if let Some(contributor) = contributors
-            .iter()
-            .find(|c| c.login.to_lowercase() == name_lower)
-        {
-            authors.push(Author {
-                name: contributor.login.clone(),
-                url: contributor.html_url.clone(),
-                avatar_url: contributor.avatar_url.clone(),
-            });
-        }
-    }
-
-    authors
-}
-
-fn normalize_version(tag: &str) -> String {
-    tag.trim_start_matches('v').to_string()
-}
-
-pub fn parse_timestamp(s: &str) -> u64 {
-    chrono::DateTime::parse_from_rfc3339(s)
-        .map(|dt| dt.timestamp() as u64)
-        .unwrap_or(0)
-}
-
 pub fn parse_github_url(url: &str) -> Option<(String, String)> {
     let url = url.trim_end_matches('/');
-    let parts: Vec<&str> = url.split('/').collect();
-
-    if parts.len() >= 2 {
-        let repo = parts[parts.len() - 1].to_string();
-        let owner = parts[parts.len() - 2].to_string();
-        if !owner.is_empty() && !repo.is_empty() {
-            return Some((owner, repo));
+    
+    if let Some(rest) = url.strip_prefix("https://github.com/") {
+        let parts: Vec<&str> = rest.split('/').collect();
+        if parts.len() >= 2 {
+            return Some((parts[0].to_string(), parts[1].to_string()));
         }
     }
+    
     None
 }

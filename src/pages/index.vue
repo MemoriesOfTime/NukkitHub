@@ -257,10 +257,11 @@ onMounted(async () => {
 })
 
 async function updateSearchProjects(): Promise<void> {
-  searchProjects.value = await search(
+  const { results } = await search(
     { query: searchQuery.value },
     { sort: sortType.value, limit: 5 },
   )
+  searchProjects.value = results
 }
 
 const messages = defineMessages({

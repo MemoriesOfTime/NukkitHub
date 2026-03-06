@@ -1,6 +1,5 @@
 pub mod cache;
 pub mod github;
-pub mod gradle;
 pub mod nukkit;
 pub mod plugin;
 pub mod search;
