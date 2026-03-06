@@ -98,6 +98,11 @@ fn find_logo_url(
     None
 }
 
+fn to_raw_url(owner: &str, repo: &str, branch: &str, path: &str) -> String {
+    format!("https://raw.githubusercontent.com/{}/{}/{}/{}", 
+            owner, repo, branch, path)
+}
+
 fn find_gallery_items(
     tree: &[GitTreeEntry],
     owner: &str,
@@ -214,6 +219,11 @@ pub fn build_plugins_from_nukkit_with_tree(repo: &Repository, plugin_yml_path: &
     }
 }
 
+fn is_placeholder(s: &str) -> bool {
+    // Detect Maven/Gradle placeholders like ${project.name} or @project.name@
+    s.contains("${") || s.contains("@")
+}
+
 fn nukkit_yml_to_plugin(
     yml: crate::nukkit::NukkitPluginYml,
     repo: &Repository,
@@ -278,7 +288,7 @@ fn nukkit_yml_to_plugin(
                 changelog: release.body.clone().unwrap_or_default(),
                 files,
                 downloads: 0,
-                published_at: parse_timestamp(&release.published_at.clone().unwrap_or_default()),
+                published_at: parse_timestamp(&release.published_at),
             }
         })
         .collect();
@@ -297,9 +307,21 @@ fn nukkit_yml_to_plugin(
         })
         .collect();
     
+    
+    // Handle placeholder names by falling back to repo name
+    let plugin_name = if is_placeholder(&yml.name) {
+        debug!(
+            repo = %repo.full_name,
+            original = %yml.name,
+            "Using repo name as fallback for placeholder"
+        );
+        repo_name.to_string()
+    } else {
+        yml.name
+    };
     Some(Plugin {
         id: format!("{}/{}", owner, repo_name),
-        name: yml.name,
+        name: plugin_name,
         source: repo.html_url.clone(),
         summary: yml.description.clone().unwrap_or_default(),
         description: processed_readme,

@@ -39,10 +39,10 @@ export function useApiVersions() {
 }
 
 // Pre-load all plugin JSON files at build time using Vite's import.meta.glob
-// From src/composables/ to AllayHubIndex/ requires ../../
-// Plugins are stored in subdirectories: AllayHubIndex/{owner}/{name}.json
+// From src/composables/ to NukkitHubIndex/ requires ../../
+// Plugins are stored in subdirectories: NukkitHubIndex/{owner}/{name}.json
 const pluginModules = import.meta.glob<AllayIndex.Plugin>(
-  '../../AllayHubIndex/**/*.json',
+  '../../NukkitHubIndex/**/*.json',
   {
     eager: false,
     import: 'default',
@@ -74,7 +74,7 @@ export function findPluginIdsByName(name: string): string[] {
   const results: string[] = []
   for (const key of Object.keys(pluginModules)) {
     if (key.toLowerCase().endsWith(suffix.toLowerCase())) {
-      const match = key.match(/AllayHubIndex\/(.+)\.json$/)
+      const match = key.match(/NukkitHubIndex\/(.+)\.json$/)
       if (match) results.push(match[1])
     }
   }
@@ -93,7 +93,7 @@ export function usePlugin(
   return useAsyncData<AllayIndex.Plugin>(
     `plugin-${id}`,
     async () => {
-      const modulePath = `../../AllayHubIndex/${id}.json`
+      const modulePath = `../../NukkitHubIndex/${id}.json`
       const loader = pluginModules[modulePath]
       if (!loader) {
         throw new Error(`Plugin not found: ${id}`)

@@ -46,6 +46,13 @@ export default defineNuxtConfig({
     },
   },
   vite: {
+    server: {
+      fs: {
+        allow: [
+          "..",
+        ],
+      },
+    },
     css: {
       preprocessorOptions: {
         scss: {
