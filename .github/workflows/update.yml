@@ -1,8 +1,9 @@
-name: Update Plugin Index
+name: Update NukkitHub Plugin Index
 
 on:
-  schedule:
-    - cron: '0 * * * *'
+  # schedule is temporarily disabled until this workflow is stable again.
+  # schedule:
+  #   - cron: '0 * * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -36,14 +37,14 @@ jobs:
         with:
           app-id: ${{ vars.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: AllayMC
-          repositories: AllayHubIndex
+          owner: MemoriesOfTime
+          repositories: NukkitHubIndex
 
-      - name: Checkout AllayHubIndex
+      - name: Checkout NukkitHubIndex
         uses: actions/checkout@v6
         with:
-          repository: AllayMC/AllayHubIndex
-          path: AllayHubIndex
+          repository: MemoriesOfTime/NukkitHubIndex
+          path: NukkitHubIndex
           token: ${{ steps.app-token.outputs.token }}
 
       - name: Setup Bun
@@ -57,13 +58,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-bun-
 
-      - name: Download indexer
+      - name: Download nukkitindexer
         run: |
-          curl -sL https://github.com/${{ github.repository }}/releases/download/indexer-latest/allayindexer -o allayindexer
-          chmod +x allayindexer
+          curl -fsSL https://github.com/${{ github.repository }}/releases/download/nukkitindexer-latest/nukkitindexer -o nukkitindexer
+          chmod +x nukkitindexer
 
       - name: Install dependencies
-        run: bun install
+        run: bun install --frozen-lockfile
 
       - name: Get current date
         id: date
@@ -116,7 +117,7 @@ jobs:
       - name: Run update
         if: steps.mode.outputs.mode == 'update'
         run: |
-          ./allayindexer update \
+          ./nukkitindexer update \
             --app-id ${{ vars.APP_ID }} \
             --installation-id ${{ vars.APP_INSTALLATION_ID }} \
             --private-key-file /tmp/app-private-key.pem \
@@ -129,7 +130,7 @@ jobs:
           if [ "${{ inputs.force }}" = "true" ]; then
             FORCE_FLAG="--force"
           fi
-          ./allayindexer discover $FORCE_FLAG \
+          ./nukkitindexer discover $FORCE_FLAG \
             --app-id ${{ vars.APP_ID }} \
             --installation-id ${{ vars.APP_INSTALLATION_ID }} \
             --private-key-file /tmp/app-private-key.pem \
@@ -163,7 +164,7 @@ jobs:
       - name: Check for changes
         id: changes
         run: |
-          cd AllayHubIndex
+          cd NukkitHubIndex
           git add -A
           if git diff --staged --quiet; then
             echo "has_changes=false" >> $GITHUB_OUTPUT
@@ -176,7 +177,7 @@ jobs:
       - name: Commit and push changes
         if: steps.changes.outputs.has_changes == 'true'
         run: |
-          cd AllayHubIndex
+          cd NukkitHubIndex
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git commit -m "chore: sync plugin index"
