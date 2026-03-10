@@ -1,8 +1,8 @@
-use allayindexer::github::{client, init_client};
-use allayindexer::plugin::{delete_plugin, load_plugins, write_plugin};
-use allayindexer::search::build_orama_index;
-use allayindexer::sync::{discover_new_plugins, update_existing_plugins};
-use allayindexer::util::{
+use nukkitindexer::github::{client, init_client};
+use nukkitindexer::plugin::{delete_plugin, load_plugins, write_plugin};
+use nukkitindexer::search::build_orama_index;
+use nukkitindexer::sync::{discover_new_plugins, update_existing_plugins};
+use nukkitindexer::util::{
     clear_processed_ids, extract_repo_full_name, has_flag, read_last_sync_with_buffer,
     read_processed_ids, write_last_sync, write_processed_ids,
 };
@@ -12,6 +12,8 @@ use std::fs;
 use std::path::Path;
 use std::process;
 use tracing::{debug, error, info, info_span, warn};
+
+const TARGET_INDEXES: &[&str] = &["nkx", "nkmot", "pnx", "lumi"];
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -41,7 +43,7 @@ fn init_tracing(debug: bool) {
     use tracing_subscriber::{EnvFilter, fmt};
 
     let filter = if debug {
-        EnvFilter::new("allayindexer=debug,info")
+        EnvFilter::new("nukkitindexer=debug,info")
     } else {
         EnvFilter::new("info")
     };
@@ -58,12 +60,12 @@ fn init_tracing(debug: bool) {
 }
 
 fn print_usage() {
-    println!("AllayHub Indexer v0.2.0");
+    println!("nukkitindexer v0.2.0");
     println!();
     println!("Usage:");
-    println!("  allayindexer build                    Build search index only");
-    println!("  allayindexer update [OPTIONS]         Update existing plugins");
-    println!("  allayindexer discover [OPTIONS]       Discover new plugins");
+    println!("  nukkitindexer build                   Build search index only");
+    println!("  nukkitindexer update [OPTIONS]        Update existing plugins");
+    println!("  nukkitindexer discover [OPTIONS]      Discover new plugins");
     println!();
     println!("Options:");
     println!("  --force                      Force full run (ignore saved state)");
@@ -82,7 +84,7 @@ fn print_usage() {
 fn cmd_build() {
     let _span = info_span!("build").entered();
 
-    let index_dir = Path::new("AllayHubIndex");
+    let index_dir = Path::new("NukkitHubIndex");
     let output_file = Path::new("src/public/orama-index.bin");
     let builder_path = Path::new("orama_builder.mjs");
 
@@ -108,6 +110,22 @@ fn cmd_build() {
         }
     }
 
+    for target in TARGET_INDEXES {
+        let target_plugins: Vec<_> = plugins
+            .iter()
+            .filter(|plugin| plugin.targets.iter().any(|item| item == target))
+            .cloned()
+            .collect();
+        let target_output = Path::new("src/public").join(format!("orama-index-{}.bin", target));
+
+        let _span =
+            info_span!("build_target_orama", target = %target, count = target_plugins.len())
+                .entered();
+        if !build_orama_index(&target_plugins, &target_output, builder_path) {
+            process::exit(1);
+        }
+    }
+
     if let Ok(meta) = fs::metadata(output_file) {
         let size_kb = meta.len() as f64 / 1024.0;
         info!(path = ?output_file, size_kb = format!("{:.1}", size_kb), "Index built");
@@ -124,13 +142,12 @@ fn cmd_update(args: &[String]) {
 
     let dry_run = has_flag(args, "--dry-run");
     let force = has_flag(args, "--force");
-    let index_dir = Path::new("AllayHubIndex");
+    let index_dir = Path::new("NukkitHubIndex");
 
     if !index_dir.exists() {
         error!(path = ?index_dir, "Index directory not found");
         process::exit(1);
     }
-
 
     let plugins = {
         let _span = info_span!("load_plugins").entered();
@@ -234,13 +251,12 @@ fn cmd_discover(args: &[String]) {
     }
 
     let dry_run = has_flag(args, "--dry-run");
-    let index_dir = Path::new("AllayHubIndex");
+    let index_dir = Path::new("NukkitHubIndex");
 
     if !index_dir.exists() {
         error!(path = ?index_dir, "Index directory not found");
         process::exit(1);
     }
-
 
     let plugins = {
         let _span = info_span!("load_plugins").entered();

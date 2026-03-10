@@ -8,6 +8,14 @@ pub struct Plugin {
     pub name: String,
     pub source: String,
     #[serde(default)]
+    pub targets: Vec<String>,
+    #[serde(default)]
+    pub primary_target: String,
+    #[serde(default)]
+    pub manifest_path: String,
+    #[serde(default)]
+    pub detection_confidence: String,
+    #[serde(default)]
     pub summary: String,
     #[serde(default)]
     pub description: String,

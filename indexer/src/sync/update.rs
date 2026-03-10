@@ -1,4 +1,4 @@
-use super::builder::{build_plugins_from_repo, parse_github_url};
+use super::builder::{build_plugins_from_nukkit_with_tree, find_plugin_manifest_paths};
 use crate::github::client;
 use crate::plugin::Plugin;
 use std::collections::{HashMap, HashSet};
@@ -79,10 +79,20 @@ enum UpdateStatus {
 }
 
 fn update_plugin(plugin: &Plugin, force: bool) -> Result<UpdateStatus, String> {
-    let (owner, repo_name) = match parse_github_url(&plugin.source) {
-        Some(parts) => parts,
-        None => return Ok(UpdateStatus::Unchanged),
-    };
+    // Parse GitHub URL to extract owner and repo
+    let (owner, repo_name) =
+        if let Some(url_path) = plugin.source.strip_prefix("https://github.com/") {
+            match url_path.split_once('/') {
+                Some((o, r)) => (o, r),
+                None => return Ok(UpdateStatus::Unchanged),
+            }
+        } else {
+            // Fallback for non-URL format (e.g., "owner/repo")
+            match plugin.source.split_once('/') {
+                Some((o, r)) => (o, r),
+                None => return Ok(UpdateStatus::Unchanged),
+            }
+        };
 
     let repo = match client().get_repository(&owner, &repo_name) {
         Ok(r) => r,
@@ -102,7 +112,28 @@ fn update_plugin(plugin: &Plugin, force: bool) -> Result<UpdateStatus, String> {
         return Ok(UpdateStatus::Deleted);
     }
 
-    let new_plugins = build_plugins_from_repo(&repo, &[]);
+    // Find plugin manifests in repository
+    let tree = match crate::github::client().get_tree(
+        owner,
+        repo_name,
+        &repo
+            .default_branch
+            .clone()
+            .unwrap_or_else(|| "main".to_string()),
+    ) {
+        Ok(t) => t.tree,
+        Err(e) => {
+            return Err(format!("Failed to get tree: {}", e));
+        }
+    };
+
+    let manifest_paths = find_plugin_manifest_paths(&tree);
+    if manifest_paths.is_empty() {
+        debug!(id = %plugin.id, "No plugin manifest found in tree, marking deleted");
+        return Ok(UpdateStatus::Deleted);
+    }
+
+    let new_plugins = build_plugins_from_nukkit_with_tree(&repo, &manifest_paths, Some(tree));
 
     let new_plugin = new_plugins.into_iter().find(|p| p.id == plugin.id);
 
@@ -166,6 +197,10 @@ fn merge_gallery_created(old: &Plugin, new: &mut Plugin) {
 
 fn plugin_changed(old: &Plugin, new: &Plugin) -> bool {
     old.name != new.name
+        || old.targets != new.targets
+        || old.primary_target != new.primary_target
+        || old.manifest_path != new.manifest_path
+        || old.detection_confidence != new.detection_confidence
         || old.summary != new.summary
         || old.stars != new.stars
         || old.downloads != new.downloads

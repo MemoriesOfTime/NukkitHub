@@ -1,4 +1,4 @@
-name: Build Indexer
+name: Build nukkitindexer
 
 on:
   push:
@@ -10,12 +10,12 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: build-indexer
+  group: build-nukkitindexer
   cancel-in-progress: true
 
 jobs:
   build:
-    name: Build Indexer
+    name: Build nukkitindexer
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -38,15 +38,15 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Build indexer
+      - name: Build nukkitindexer
         run: cargo build --release --manifest-path indexer/Cargo.toml
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: indexer-latest
-          name: Indexer Binary
-          files: indexer/target/release/allayindexer
-          body: Auto-built indexer binary
+          tag_name: nukkitindexer-latest
+          name: nukkitindexer Binary
+          files: indexer/target/release/nukkitindexer
+          body: Auto-built nukkitindexer binary
           prerelease: true
           make_latest: false

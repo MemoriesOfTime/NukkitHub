@@ -39,7 +39,7 @@ pub fn get_installation_token(jwt: &str, installation_id: &str) -> Result<String
     let mut resp = ureq::post(&url)
         .header("Accept", "application/vnd.github+json")
         .header("Authorization", &format!("Bearer {}", jwt))
-        .header("User-Agent", "allayindexer")
+        .header("User-Agent", "nukkitindexer")
         .header("X-GitHub-Api-Version", "2022-11-28")
         .send_empty()
         .map_err(|e| format!("Request failed: {}", e))?;

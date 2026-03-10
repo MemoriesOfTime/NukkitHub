@@ -1,33 +1,30 @@
-use super::builder::build_plugins_from_repo;
+use super::builder::{build_plugins_from_nukkit, find_plugin_manifest_paths};
 use crate::github::client;
 use crate::plugin::Plugin;
 use chrono::{Datelike, Utc};
 use std::collections::{HashMap, HashSet};
 use tracing::{debug, debug_span, info, info_span, warn};
 
-const CODE_SEARCH_QUERY: &str = "org.allaymc filename:build.gradle -repo:AllayMC/Allay -repo:AllayMC/StateUpdater -repo:AllayMC/EncryptMyPack -repo:AllayMC/AllayGradle -repo:AllayMC/NBT -repo:AllayMC/JavaPluginTemplate -repo:AllayPlus/AllayPlus -repo:MineBuilders/allaymc-kotlin-plugin-template -user:Buddelbubi";
-
-const TOPIC_QUERIES: &[&str] = &["topic:allaymc-plugin fork:true"];
-
-const EXCLUDED_REPOS: &[&str] = &[
-    "AllayMC/Allay",
-    "AllayMC/StateUpdater",
-    "AllayMC/EncryptMyPack",
-    "AllayMC/AllayGradle",
-    "AllayMC/NBT",
-    "AllayMC/JavaPluginTemplate",
-    "AllayPlus/AllayPlus",
-    "MineBuilders/allaymc-kotlin-plugin-template",
+const CODE_SEARCH_QUERIES: &[&str] = &[
+    "filename:plugin.yml path:src/main/resources language:YAML",
+    "filename:powernukkitx.yml path:src/main/resources language:YAML",
 ];
 
-#[derive(Debug, Clone)]
-pub struct RepoMatch {
-    pub full_name: String,
-    pub gradle_paths: Vec<String>,
-}
+const TOPIC_QUERIES: &[&str] = &[
+    "topic:nukkit-plugin fork:true",
+    "topic:nukkit-mot-plugin fork:true",
+];
 
-const START_YEAR: i32 = 2023;
+const EXCLUDED_REPOS: &[&str] = &[];
+
+const START_YEAR: i32 = 2015;
 const SHARD_LIMIT: u64 = 1000;
+
+#[derive(Debug, Clone)]
+struct RepoMatch {
+    full_name: String,
+    manifest_paths: Vec<String>,
+}
 
 pub struct DiscoverResult {
     pub new_plugins: Vec<Plugin>,
@@ -42,13 +39,7 @@ pub fn discover_new_plugins(
     let matches = {
         let _span = info_span!("collect_repos").entered();
         match last_sync {
-            Some(date) => {
-                let query = format!("{} pushed:>{}", CODE_SEARCH_QUERY, date);
-                let mut matches = collect_repo_matches(&query, existing_repos).unwrap_or_default();
-                let topic_matches = collect_repo_matches_by_topic(existing_repos, Some(date));
-                merge_repo_matches(&mut matches, topic_matches);
-                matches
-            }
+            Some(date) => collect_repo_matches_incremental(existing_repos, date),
             None => collect_repo_matches_full(existing_repos),
         }
     };
@@ -65,17 +56,45 @@ pub fn discover_new_plugins(
     process_repos_parallel(matches, existing_ids)
 }
 
-fn collect_repo_matches_full(existing_repos: &HashSet<String>) -> Vec<RepoMatch> {
-    let mut matches = match collect_repo_matches(CODE_SEARCH_QUERY, existing_repos) {
-        Ok(m) => m,
-        Err(total) => {
-            info!(
-                total = total,
-                "Results exceed 1000, using year-based sharding"
-            );
-            collect_repo_matches_by_year(existing_repos)
+fn collect_repo_matches_incremental(
+    existing_repos: &HashSet<String>,
+    since: &str,
+) -> Vec<RepoMatch> {
+    let mut matches = Vec::new();
+
+    for query in CODE_SEARCH_QUERIES {
+        let query = format!("{} pushed:>{}", query, since);
+        match collect_repo_matches(&query, existing_repos) {
+            Ok(query_matches) => merge_repo_matches(&mut matches, query_matches),
+            Err(total) => {
+                warn!(total = total, query = %query, "Incremental query truncated, skipping shard")
+            }
         }
-    };
+    }
+
+    let topic_matches = collect_repo_matches_by_topic(existing_repos, Some(since));
+    merge_repo_matches(&mut matches, topic_matches);
+    matches
+}
+
+fn collect_repo_matches_full(existing_repos: &HashSet<String>) -> Vec<RepoMatch> {
+    let mut matches = Vec::new();
+
+    for query in CODE_SEARCH_QUERIES {
+        let query_matches = match collect_repo_matches(query, existing_repos) {
+            Ok(m) => m,
+            Err(total) => {
+                info!(
+                    total = total,
+                    query = %query,
+                    "Results exceed 1000, using year-based sharding"
+                );
+                collect_repo_matches_by_year(query, existing_repos)
+            }
+        };
+
+        merge_repo_matches(&mut matches, query_matches);
+    }
 
     let topic_matches = collect_repo_matches_by_topic(existing_repos, None);
     info!(
@@ -88,17 +107,17 @@ fn collect_repo_matches_full(existing_repos: &HashSet<String>) -> Vec<RepoMatch>
     matches
 }
 
-fn collect_repo_matches_by_year(existing_repos: &HashSet<String>) -> Vec<RepoMatch> {
+fn collect_repo_matches_by_year(query: &str, existing_repos: &HashSet<String>) -> Vec<RepoMatch> {
     let current_year = Utc::now().year();
     let mut repo_map: HashMap<String, Vec<String>> = HashMap::new();
 
     for year in START_YEAR..=current_year {
         let _span = debug_span!("search_year", year = year).entered();
-        let query = format!("{} pushed:{}-01-01..{}-12-31", CODE_SEARCH_QUERY, year, year);
-        let matches = match collect_repo_matches(&query, existing_repos) {
+        let year_query = format!("{} pushed:{}-01-01..{}-12-31", query, year, year);
+        let matches = match collect_repo_matches(&year_query, existing_repos) {
             Ok(m) => m,
             Err(total) => {
-                warn!(year = year, total = total, "Year truncated (> 1000)");
+                warn!(year = year, total = total, query = %year_query, "Year truncated (> 1000)");
                 continue;
             }
         };
@@ -107,18 +126,19 @@ fn collect_repo_matches_by_year(existing_repos: &HashSet<String>) -> Vec<RepoMat
             repo_map
                 .entry(m.full_name)
                 .or_default()
-                .extend(m.gradle_paths);
+                .extend(m.manifest_paths);
         }
     }
 
     repo_map
         .into_iter()
-        .map(|(full_name, mut paths)| {
-            paths.sort();
-            paths.dedup();
+        .map(|(full_name, mut manifest_paths)| {
+            manifest_paths.sort();
+            manifest_paths.dedup();
+
             RepoMatch {
                 full_name,
-                gradle_paths: paths,
+                manifest_paths,
             }
         })
         .collect()
@@ -126,33 +146,39 @@ fn collect_repo_matches_by_year(existing_repos: &HashSet<String>) -> Vec<RepoMat
 
 fn collect_repo_matches_by_topic(
     existing_repos: &HashSet<String>,
-    pushed_after: Option<&str>,
+    since: Option<&str>,
 ) -> Vec<RepoMatch> {
     let mut repo_map: HashMap<String, Vec<String>> = HashMap::new();
 
     for topic_query in TOPIC_QUERIES {
-        let _span = debug_span!("search_topic", query = %topic_query).entered();
-
-        let query = match pushed_after {
-            Some(date) => format!("{} pushed:>{}", topic_query, date),
-            None => topic_query.to_string(),
+        let query = if let Some(date) = since {
+            format!("{} pushed:>{}", topic_query, date)
+        } else {
+            topic_query.to_string()
         };
 
         for page in 1..=10 {
+            let _span = debug_span!("topic_search", query = %query, page = page).entered();
             match client().search_repositories(&query, page) {
                 Ok(result) => {
-                    for repo in &result.items {
-                        let name = &repo.full_name;
+                    if result.items.is_empty() {
+                        break;
+                    }
 
-                        if EXCLUDED_REPOS.iter().any(|e| e == name) {
-                            debug!(repo = %name, "Skip excluded");
+                    for item in &result.items {
+                        let name = &item.full_name;
+                        if item.fork && !topic_query.contains("fork:true") {
+                            debug!(repo = %name, "Skip fork");
                             continue;
                         }
                         if existing_repos.contains(name) {
                             debug!(repo = %name, "Skip existing");
                             continue;
                         }
-
+                        if EXCLUDED_REPOS.contains(&name.as_str()) {
+                            debug!(repo = %name, "Skip excluded");
+                            continue;
+                        }
                         repo_map.entry(name.clone()).or_default();
                     }
 
@@ -161,7 +187,7 @@ fn collect_repo_matches_by_topic(
                     }
                 }
                 Err(e) => {
-                    warn!(error = %e, page = page, query = %topic_query, "Topic search error");
+                    warn!(error = %e, page = page, query = %query, "Topic search error");
                     break;
                 }
             }
@@ -172,18 +198,24 @@ fn collect_repo_matches_by_topic(
 
     repo_map
         .into_iter()
-        .map(|(full_name, gradle_paths)| RepoMatch {
+        .map(|(full_name, _)| RepoMatch {
             full_name,
-            gradle_paths,
+            manifest_paths: Vec::new(),
         })
         .collect()
 }
 
 fn merge_repo_matches(base: &mut Vec<RepoMatch>, additions: Vec<RepoMatch>) {
-    let existing: HashSet<_> = base.iter().map(|m| m.full_name.clone()).collect();
-
     for addition in additions {
-        if !existing.contains(&addition.full_name) {
+        if let Some(existing) = base.iter_mut().find(|candidate| {
+            candidate
+                .full_name
+                .eq_ignore_ascii_case(&addition.full_name)
+        }) {
+            existing.manifest_paths.extend(addition.manifest_paths);
+            existing.manifest_paths.sort();
+            existing.manifest_paths.dedup();
+        } else {
             base.push(addition);
         }
     }
@@ -218,6 +250,10 @@ fn collect_repo_matches(
                 debug!(repo = %name, "Skip existing");
                 continue;
             }
+            if EXCLUDED_REPOS.contains(&name.as_str()) {
+                debug!(repo = %name, "Skip excluded");
+                continue;
+            }
             repo_map
                 .entry(name.clone())
                 .or_default()
@@ -249,9 +285,14 @@ fn collect_repo_matches(
 
     Ok(repo_map
         .into_iter()
-        .map(|(full_name, gradle_paths)| RepoMatch {
-            full_name,
-            gradle_paths,
+        .map(|(full_name, mut manifest_paths)| {
+            manifest_paths.sort();
+            manifest_paths.dedup();
+
+            RepoMatch {
+                full_name,
+                manifest_paths,
+            }
         })
         .collect())
 }
@@ -303,7 +344,12 @@ fn process_repos_parallel(
 }
 
 fn process_single_repo(repo_match: RepoMatch) -> Result<Vec<Plugin>, String> {
-    let parts: Vec<&str> = repo_match.full_name.split('/').collect();
+    let RepoMatch {
+        full_name,
+        manifest_paths,
+    } = repo_match;
+
+    let parts: Vec<&str> = full_name.split('/').collect();
     if parts.len() != 2 {
         return Err("invalid repo name".to_string());
     }
@@ -311,51 +357,46 @@ fn process_single_repo(repo_match: RepoMatch) -> Result<Vec<Plugin>, String> {
     let repo = client().get_repository(parts[0], parts[1])?;
 
     if repo.is_template {
-        debug!(repo = %repo_match.full_name, "Skip template");
+        debug!(repo = %full_name, "Skip template");
         return Ok(Vec::new());
     }
     if repo.archived {
-        debug!(repo = %repo_match.full_name, "Skip archived");
+        debug!(repo = %full_name, "Skip archived");
         return Ok(Vec::new());
     }
     if repo.topics.iter().any(|t| t == "noindex") {
-        debug!(repo = %repo_match.full_name, "Skip noindex");
+        debug!(repo = %full_name, "Skip noindex");
         return Ok(Vec::new());
     }
 
-    let gradle_paths = if repo_match.gradle_paths.is_empty() {
-        find_gradle_files(parts[0], parts[1], &repo)
+    let manifest_paths = if manifest_paths.is_empty() {
+        find_plugin_manifests(parts[0], parts[1], &repo)
     } else {
-        repo_match.gradle_paths
+        manifest_paths
     };
 
-    if gradle_paths.is_empty() {
-        debug!(repo = %repo_match.full_name, "No gradle files found");
+    if manifest_paths.is_empty() {
+        debug!(repo = %full_name, "No plugin manifest found");
         return Ok(Vec::new());
     }
 
-    let plugins = build_plugins_from_repo(&repo, &gradle_paths);
+    let plugins = build_plugins_from_nukkit(&repo, &manifest_paths);
     if plugins.is_empty() {
-        debug!(repo = %repo_match.full_name, "No plugins found");
+        debug!(repo = %full_name, "No plugins built");
     }
+
     Ok(plugins)
 }
 
-fn find_gradle_files(owner: &str, repo_name: &str, repo: &crate::github::Repository) -> Vec<String> {
+fn find_plugin_manifests(
+    owner: &str,
+    repo_name: &str,
+    repo: &crate::github::Repository,
+) -> Vec<String> {
     let branch = repo.default_branch.as_deref().unwrap_or("main");
 
     match client().get_tree(owner, repo_name, branch) {
-        Ok(tree) => {
-            tree.tree
-                .iter()
-                .filter(|entry| {
-                    entry.entry_type == "blob"
-                        && (entry.path.ends_with("build.gradle.kts")
-                            || entry.path.ends_with("build.gradle"))
-                })
-                .map(|entry| entry.path.clone())
-                .collect()
-        }
+        Ok(tree) => find_plugin_manifest_paths(&tree.tree),
         Err(e) => {
             debug!(repo = %format!("{}/{}", owner, repo_name), error = %e, "Failed to get tree");
             Vec::new()

@@ -1,8 +1,20 @@
 mod image;
 mod link;
-mod version_resolver;
 
 use crate::github::{Contributor, GitTreeEntry, Release, Repository, client};
+use crate::plugin::{
+    Author, Dependency, GalleryItem, License, Links, Plugin, Version, VersionFile,
+};
+use std::collections::{BTreeMap, BTreeSet};
+use tracing::debug;
+
+fn parse_timestamp(iso_string: &str) -> u64 {
+    use chrono::{DateTime, Utc};
+    DateTime::parse_from_rfc3339(iso_string)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc).timestamp() as u64)
+        .unwrap_or(0)
+}
 
 const CATEGORIES: &[&str] = &[
     "adventure",
@@ -25,30 +37,44 @@ const CATEGORIES: &[&str] = &[
     "utility",
     "world-generation",
 ];
-use crate::gradle::{AllayDsl, VersionRef, parse_build_gradle, parse_build_gradle_kts, parse_gradle_settings, parse_plugin_json};
-use crate::plugin::{
-    Author, Dependency, GalleryItem, License, Links, Plugin, Version, VersionFile,
-};
-use tracing::debug;
+
+pub const TARGET_IDS: &[&str] = &["nkx", "nkmot", "pnx", "lumi"];
+
+const MANIFEST_FILENAMES: &[&str] = &["plugin.yml", "powernukkitx.yml"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum DetectionConfidence {
+    Low,
+    Medium,
+    High,
+}
+
+impl DetectionConfidence {
+    fn as_str(self) -> &'static str {
+        match self {
+            DetectionConfidence::Low => "low",
+            DetectionConfidence::Medium => "medium",
+            DetectionConfidence::High => "high",
+        }
+    }
+
+    fn promote(&mut self, other: DetectionConfidence) {
+        if other > *self {
+            *self = other;
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TargetDetection {
+    targets: Vec<String>,
+    confidence: DetectionConfidence,
+}
 
 pub struct PostProcessContext<'a> {
     pub owner: &'a str,
     pub repo: &'a str,
     pub branch: &'a str,
-}
-
-struct PluginBuildInput<'a> {
-    repo: &'a Repository,
-    dsl: &'a AllayDsl,
-    releases: &'a [Release],
-    readme: &'a str,
-    license: &'a License,
-    contributors: &'a [Contributor],
-    owner: &'a str,
-    repo_name: &'a str,
-    branch: &'a str,
-    icon_url: &'a str,
-    repo_gallery: Vec<GalleryItem>,
 }
 
 type ImageProcessorFn = fn(&str, &PostProcessContext, &mut Vec<GalleryItem>) -> String;
@@ -73,30 +99,6 @@ fn process_readme(readme: &str, ctx: &PostProcessContext) -> (String, Vec<Galler
     (content, gallery)
 }
 
-fn gradle_path_to_module(path: &str) -> Option<String> {
-    if let Some(dir) = path.strip_suffix("/build.gradle.kts") {
-        Some(dir.to_string())
-    } else if let Some(dir) = path.strip_suffix("/build.gradle") {
-        Some(dir.to_string())
-    } else if path == "build.gradle.kts" || path == "build.gradle" {
-        Some("root".to_string())
-    } else {
-        None
-    }
-}
-
-fn plugin_json_paths_for_module(module: &str) -> Vec<String> {
-    let base = if module == "root" || module.is_empty() {
-        "src/main/resources".to_string()
-    } else {
-        format!("{}/src/main/resources", module)
-    };
-    vec![
-        format!("{}/plugin.json", base),
-        format!("{}/extension.json", base),
-    ]
-}
-
 fn get_tree(owner: &str, repo: &str, branch: &str) -> Vec<GitTreeEntry> {
     client()
         .get_tree(owner, repo, branch)
@@ -104,306 +106,339 @@ fn get_tree(owner: &str, repo: &str, branch: &str) -> Vec<GitTreeEntry> {
         .unwrap_or_default()
 }
 
-fn find_gradle_paths_from_tree(tree: &[GitTreeEntry]) -> Vec<String> {
-    tree.iter()
-        .filter(|e| {
-            e.entry_type == "blob"
-                && (e.path.ends_with("build.gradle.kts")
-                    || e.path.ends_with("build.gradle"))
-        })
-        .map(|e| e.path.clone())
-        .collect()
-}
+fn find_logo_url(tree: &[GitTreeEntry], owner: &str, repo: &str, branch: &str) -> Option<String> {
+    let logo_paths = [
+        ".github/img/logo.png",
+        ".github/img/icon.png",
+        "logo.png",
+        "icon.png",
+    ];
 
-fn parse_gradle_file(path: &str, content: &str) -> Option<AllayDsl> {
-    if path.ends_with(".gradle.kts") {
-        parse_build_gradle_kts(content)
-    } else {
-        parse_build_gradle(content)
-    }
-}
-
-fn is_branch_snapshot(version: &str) -> bool {
-    let lower = version.to_lowercase();
-    lower.ends_with("-snapshot") && !lower.chars().next().is_some_and(|c| c.is_ascii_digit())
-}
-
-fn resolve_dsl_versions(dsl: &mut AllayDsl, tree: &[GitTreeEntry], owner: &str, repo: &str) {
-    if !matches!(dsl.api_version_ref, VersionRef::Literal(_))
-        && let Some(v) = version_resolver::resolve_version(&dsl.api_version_ref, tree, owner, repo)
-        {
-            dsl.api = Some(v);
-        }
-
-    if !matches!(dsl.server_version_ref, VersionRef::Literal(_))
-        && let Some(v) =
-            version_resolver::resolve_version(&dsl.server_version_ref, tree, owner, repo)
-        {
-            dsl.server = Some(v);
-        }
-
-    if let Some(api) = &dsl.api
-        && is_branch_snapshot(api)
-            && let Some(v) = version_resolver::resolve_snapshot_version() {
-                dsl.api = Some(v);
-            }
-
-    if let Some(server) = &dsl.server
-        && is_branch_snapshot(server)
-            && let Some(v) = version_resolver::resolve_snapshot_version() {
-                dsl.server = Some(v);
-            }
-}
-
-struct SettingsMetadata {
-    project_name: Option<String>,
-    project_version: Option<String>,
-}
-
-fn find_settings_metadata(
-    owner: &str,
-    repo_name: &str,
-    tree: &[GitTreeEntry],
-) -> SettingsMetadata {
-    let settings_paths = ["settings.gradle.kts", "settings.gradle"];
-    for path in settings_paths {
-        if tree
-            .iter()
-            .any(|e| e.path == path && e.entry_type == "blob")
-            && let Ok(content) = client().get_file_content(owner, repo_name, path)
-        {
-            let dsl = parse_gradle_settings(path, &content);
-            if dsl.project_name.is_some() || dsl.project_version.is_some() {
-                return SettingsMetadata {
-                    project_name: dsl.project_name,
-                    project_version: dsl.project_version,
-                };
-            }
+    for path in &logo_paths {
+        if tree.iter().any(|e| e.path == *path) {
+            return Some(format!(
+                "https://raw.githubusercontent.com/{}/{}/{}/{}",
+                owner, repo, branch, path
+            ));
         }
     }
-    SettingsMetadata {
-        project_name: None,
-        project_version: None,
-    }
+    None
 }
 
-fn tree_has_file(tree: &[GitTreeEntry], path: &str) -> bool {
-    tree.iter()
-        .any(|e| e.entry_type == "blob" && e.path == path)
-}
-
-const LOGO_FILENAMES: &[&str] = &[
-    "logo.png",
-    "icon.png",
-    "logo.jpg",
-    "icon.jpg",
-    "logo.svg",
-    "icon.svg",
-    "logo.webp",
-    "icon.webp",
-];
-
-const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "svg", "webp", "gif"];
-
-pub fn to_raw_url(owner: &str, repo: &str, branch: &str, path: &str) -> String {
+fn to_raw_url(owner: &str, repo: &str, branch: &str, path: &str) -> String {
     format!(
         "https://raw.githubusercontent.com/{}/{}/{}/{}",
         owner, repo, branch, path
     )
 }
 
-fn find_file_anywhere(tree: &[GitTreeEntry], filename: &str) -> Option<String> {
+fn find_gallery_items(
+    tree: &[GitTreeEntry],
+    owner: &str,
+    repo: &str,
+    branch: &str,
+) -> Vec<GalleryItem> {
+    let gallery_dir = ".github/img/";
+    let excluded = ["logo.png", "icon.png"];
+
     tree.iter()
-        .filter(|e| e.entry_type == "blob")
-        .find(|e| e.path == filename || e.path.ends_with(&format!("/{}", filename)))
-        .map(|e| e.path.clone())
+        .filter(|e| {
+            e.entry_type == "blob"
+                && e.path.starts_with(gallery_dir)
+                && e.path.ends_with(".png")
+                && !excluded.iter().any(|ex| e.path.ends_with(ex))
+        })
+        .map(|e| GalleryItem {
+            url: format!(
+                "https://raw.githubusercontent.com/{}/{}/{}/{}",
+                owner, repo, branch, e.path
+            ),
+            title: String::new(),
+            description: String::new(),
+            created: String::new(),
+        })
+        .collect()
 }
 
-fn find_logo_url(tree: &[GitTreeEntry], owner: &str, repo: &str, branch: &str) -> Option<String> {
-    for filename in LOGO_FILENAMES {
-        if let Some(path) = find_file_anywhere(tree, filename) {
-            return Some(to_raw_url(owner, repo, branch, &path));
+pub(crate) fn is_plugin_manifest_path(path: &str) -> bool {
+    path.contains("src/main/resources")
+        && MANIFEST_FILENAMES.iter().any(|name| path.ends_with(name))
+}
+
+pub(crate) fn find_plugin_manifest_paths(tree: &[GitTreeEntry]) -> Vec<String> {
+    let mut paths: Vec<String> = tree
+        .iter()
+        .filter(|entry| entry.entry_type == "blob" && is_plugin_manifest_path(&entry.path))
+        .map(|entry| entry.path.clone())
+        .collect();
+
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn ordered_targets(targets: &BTreeSet<&'static str>) -> Vec<String> {
+    TARGET_IDS
+        .iter()
+        .filter(|target| targets.contains(**target))
+        .map(|target| (*target).to_string())
+        .collect()
+}
+
+fn module_key_from_manifest_path(path: &str) -> String {
+    path.find("src/main/resources")
+        .map(|pos| path[..pos].trim_end_matches('/').to_string())
+        .unwrap_or_default()
+}
+
+fn group_manifest_paths(manifest_paths: &[String]) -> Vec<Vec<String>> {
+    let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+
+    for path in manifest_paths
+        .iter()
+        .filter(|path| is_plugin_manifest_path(path))
+    {
+        groups
+            .entry(module_key_from_manifest_path(path))
+            .or_default()
+            .push(path.clone());
+    }
+
+    for paths in groups.values_mut() {
+        paths.sort();
+        paths.dedup();
+    }
+
+    groups.into_values().collect()
+}
+
+fn find_build_file_paths<'a>(tree: &'a [GitTreeEntry], plugin_yml_path: &str) -> Vec<&'a str> {
+    let module_prefix = plugin_yml_path
+        .find("src/main/resources")
+        .map(|pos| &plugin_yml_path[..pos])
+        .unwrap_or("");
+
+    let build_names = ["build.gradle.kts", "build.gradle", "pom.xml"];
+
+    let mut expected: Vec<String> = Vec::new();
+
+    // Module-level build files (for multi-module projects)
+    if !module_prefix.is_empty() {
+        for name in &build_names {
+            expected.push(format!("{}{}", module_prefix, name));
         }
     }
-    None
+
+    // Root-level build files
+    for name in &build_names {
+        expected.push(name.to_string());
+    }
+
+    // Gradle version catalog
+    expected.push("gradle/libs.versions.toml".to_string());
+
+    tree.iter()
+        .filter(|e| e.entry_type == "blob" && expected.iter().any(|exp| e.path == *exp))
+        .map(|e| e.path.as_str())
+        .collect()
 }
 
-fn find_gallery_items(tree: &[GitTreeEntry], owner: &str, repo: &str, branch: &str) -> Vec<GalleryItem> {
-    let now = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    let mut gallery = Vec::new();
-    for i in 1..=10 {
-        let mut found = false;
-        for ext in IMAGE_EXTENSIONS {
-            let filename = format!("gallery{}.{}", i, ext);
-            if let Some(path) = find_file_anywhere(tree, &filename) {
-                gallery.push(GalleryItem {
-                    url: to_raw_url(owner, repo, branch, &path),
-                    title: format!("Gallery {}", i),
-                    description: String::new(),
-                    created: now.clone(),
-                });
-                found = true;
-                break;
+fn contains_any(content_lower: &str, indicators: &[&str]) -> bool {
+    indicators
+        .iter()
+        .any(|indicator| content_lower.contains(indicator))
+}
+
+fn detect_targets_from_topics(topics: &[String]) -> (BTreeSet<&'static str>, DetectionConfidence) {
+    let mut targets = BTreeSet::new();
+    let mut confidence = DetectionConfidence::Low;
+
+    for topic in topics {
+        match topic.as_str() {
+            "nukkit-plugin" => {
+                targets.insert("nkx");
+                targets.insert("nkmot");
+                confidence.promote(DetectionConfidence::Medium);
             }
-        }
-        if !found {
-            break;
+            "nukkit-mot-plugin" => {
+                targets.insert("nkmot");
+                confidence.promote(DetectionConfidence::Medium);
+            }
+            "powernukkitx-plugin" | "pnx-plugin" => {
+                targets.insert("pnx");
+                confidence.promote(DetectionConfidence::High);
+            }
+            "lumi-plugin" => {
+                targets.insert("lumi");
+                confidence.promote(DetectionConfidence::High);
+            }
+            _ => {}
         }
     }
-    gallery
+
+    (targets, confidence)
 }
 
-fn is_allay_relevant(content: &str, catalog_aliases: &[String]) -> bool {
-    if content.contains("org.allaymc") {
-        return true;
+fn detect_targets_from_build_content(
+    content_lower: &str,
+) -> (BTreeSet<&'static str>, DetectionConfidence) {
+    const NKX_INDICATORS: &[&str] = &["cloudburstmc", "opencollab.dev", "repo.nukkitx.com"];
+    const NKMOT_INDICATORS: &[&str] = &["memoriesoftime", "nukkit-mot"];
+    const PNX_INDICATORS: &[&str] = &[
+        "cn.powernukkitx",
+        "powernukkitx",
+        "powernukkit/powernukkitx",
+    ];
+    const LUMI_INDICATORS: &[&str] = &[
+        "repo.luminiadev.com",
+        "com.koshakmine:lumi",
+        "<groupid>com.koshakmine</groupid>",
+        "<artifactid>lumi</artifactid>",
+    ];
+
+    let mut targets = BTreeSet::new();
+
+    if contains_any(content_lower, PNX_INDICATORS) {
+        targets.insert("pnx");
     }
-    for alias in catalog_aliases {
-        if content.contains(alias.as_str()) {
-            return true;
-        }
+    if contains_any(content_lower, LUMI_INDICATORS) {
+        targets.insert("lumi");
     }
-    false
+    if contains_any(content_lower, NKX_INDICATORS) {
+        targets.insert("nkx");
+    }
+    if contains_any(content_lower, NKMOT_INDICATORS) {
+        targets.insert("nkmot");
+    }
+
+    if !targets.is_empty() {
+        return (targets, DetectionConfidence::High);
+    }
+
+    if content_lower.contains("cn.nukkit") {
+        targets.insert("nkx");
+        targets.insert("nkmot");
+        return (targets, DetectionConfidence::Medium);
+    }
+
+    (targets, DetectionConfidence::Low)
 }
 
-fn find_allay_catalog_aliases(
+fn select_primary_manifest_path(manifest_paths: &[String]) -> Option<&str> {
+    manifest_paths
+        .iter()
+        .find(|path| path.ends_with("plugin.yml"))
+        .or_else(|| {
+            manifest_paths
+                .iter()
+                .find(|path| path.ends_with("powernukkitx.yml"))
+        })
+        .or_else(|| manifest_paths.first())
+        .map(|path| path.as_str())
+}
+
+fn detect_targets(
     tree: &[GitTreeEntry],
-    owner: &str,
-    repo_name: &str,
-) -> Vec<String> {
-    let toml_path = "gradle/libs.versions.toml";
-    if !tree_has_file(tree, toml_path) {
-        return Vec::new();
-    }
-    let content = match client().get_file_content(owner, repo_name, toml_path) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-    parse_allay_aliases_from_toml(&content)
-}
+    repo: &Repository,
+    manifest_paths: &[String],
+) -> Option<TargetDetection> {
+    let (owner, repo_name) = repo.full_name.split_once('/')?;
+    let primary_manifest_path = select_primary_manifest_path(manifest_paths)?;
+    let mut targets = BTreeSet::new();
+    let mut confidence = DetectionConfidence::Low;
 
-fn parse_allay_aliases_from_toml(content: &str) -> Vec<String> {
-    let table: toml::Table = match content.parse() {
-        Ok(t) => t,
-        Err(_) => return Vec::new(),
-    };
-    let plugins = match table.get("plugins").and_then(|v| v.as_table()) {
-        Some(t) => t,
-        None => return Vec::new(),
-    };
-    let mut aliases = Vec::new();
-    for (key, value) in plugins {
-        let id = match value {
-            toml::Value::Table(t) => t.get("id").and_then(|v| v.as_str()),
-            toml::Value::String(s) => Some(s.as_str()),
-            _ => None,
-        };
-        if let Some(id) = id {
-            if id.contains("org.allaymc") {
-                let dotted = key.replace('-', ".");
-                if dotted != *key {
-                    aliases.push(dotted);
+    let (topic_targets, topic_confidence) = detect_targets_from_topics(&repo.topics);
+    targets.extend(topic_targets);
+    confidence.promote(topic_confidence);
+
+    if manifest_paths
+        .iter()
+        .any(|path| path.ends_with("powernukkitx.yml"))
+    {
+        targets.insert("pnx");
+        confidence.promote(DetectionConfidence::High);
+    }
+    let build_paths = find_build_file_paths(tree, primary_manifest_path);
+    if build_paths.is_empty() && targets.is_empty() {
+        debug!(repo = %repo.full_name, module = %module_key_from_manifest_path(primary_manifest_path), "No target evidence found");
+        return None;
+    }
+
+    for path in &build_paths {
+        match client().get_file_content(owner, repo_name, path) {
+            Ok(content) => {
+                let lower = content.to_lowercase();
+                let (build_targets, build_confidence) = detect_targets_from_build_content(&lower);
+
+                if !build_targets.is_empty() {
+                    targets.extend(build_targets);
+                    confidence.promote(build_confidence);
                 }
-                aliases.push(key.clone());
             }
-        }
-    }
-    aliases
-}
-
-fn find_first_allay_dsl(
-    owner: &str,
-    repo_name: &str,
-    paths: &[String],
-    full_name: &str,
-    tree: &[GitTreeEntry],
-) -> Option<AllayDsl> {
-    let mut settings_meta: Option<SettingsMetadata> = None;
-    let catalog_aliases = find_allay_catalog_aliases(tree, owner, repo_name);
-    let mut best_plugin_dsl: Option<AllayDsl> = None;
-    let mut best_dep_dsl: Option<AllayDsl> = None;
-
-    for gradle_path in paths {
-        let content = match client().get_file_content(owner, repo_name, gradle_path) {
-            Ok(c) => c,
             Err(e) => {
-                debug!(repo = %full_name, path = %gradle_path, error = %e, "Skip: failed to get gradle file");
-                continue;
+                debug!(repo = %repo.full_name, file = %path, error = %e, "Failed to read build file");
             }
-        };
-
-        if !is_allay_relevant(&content, &catalog_aliases) {
-            debug!(repo = %full_name, path = %gradle_path, "Skip: no org.allaymc dependency");
-            continue;
-        }
-
-        let mut dsl = match parse_gradle_file(gradle_path, &content) {
-            Some(d) => d,
-            None => {
-                debug!(repo = %full_name, path = %gradle_path, "Skip: failed to parse gradle file");
-                continue;
-            }
-        };
-
-        let meta = settings_meta.get_or_insert_with(|| {
-            find_settings_metadata(owner, repo_name, tree)
-        });
-        if dsl.project_name.is_none() {
-            dsl.project_name = meta.project_name.clone();
-        }
-        if dsl.project_version.is_none() {
-            dsl.project_version = meta.project_version.clone();
-        }
-
-        if dsl.plugin.is_none() && dsl.has_allay_dependency
-            && let Some(module) = gradle_path_to_module(gradle_path) {
-                for json_path in plugin_json_paths_for_module(&module) {
-                    if !tree_has_file(tree, &json_path) {
-                        continue;
-                    }
-                    if let Ok(json_content) =
-                        client().get_file_content(owner, repo_name, &json_path)
-                        && let Some(json) = parse_plugin_json(&json_content)
-                            && json.entrance.is_some() {
-                                dsl.plugin = Some(json.into_plugin_dsl(
-                                    dsl.project_name.as_deref(),
-                                    dsl.project_version.as_deref(),
-                                    dsl.project_description.as_deref(),
-                                ));
-                                break;
-                            }
-                }
-            }
-
-        if dsl.plugin.is_some() {
-            best_plugin_dsl = Some(dsl);
-            break;
-        } else if dsl.has_allay_dependency && best_dep_dsl.is_none() {
-            best_dep_dsl = Some(dsl);
         }
     }
 
-    match (best_plugin_dsl, best_dep_dsl) {
-        (Some(mut plugin_dsl), Some(dep_dsl)) => {
-            if plugin_dsl.api.is_none() {
-                plugin_dsl.api = dep_dsl.api;
-                plugin_dsl.api_version_ref = dep_dsl.api_version_ref;
-            }
-            if plugin_dsl.server.is_none() {
-                plugin_dsl.server = dep_dsl.server;
-                plugin_dsl.server_version_ref = dep_dsl.server_version_ref;
-            }
-            if plugin_dsl.api_only.is_none() {
-                plugin_dsl.api_only = dep_dsl.api_only;
-            }
-            Some(plugin_dsl)
-        }
-        (Some(plugin_dsl), None) => Some(plugin_dsl),
-        (None, Some(dep_dsl)) => Some(dep_dsl),
-        (None, None) => None,
+    if targets.is_empty() {
+        debug!(repo = %repo.full_name, module = %module_key_from_manifest_path(primary_manifest_path), "No supported targets detected");
+        return None;
     }
+
+    Some(TargetDetection {
+        targets: ordered_targets(&targets),
+        confidence,
+    })
 }
 
-pub fn build_plugins_from_repo(repo: &Repository, gradle_paths: &[String]) -> Vec<Plugin> {
+fn slugify_segment(value: &str) -> String {
+    let mut slug = String::new();
+    let mut last_was_dash = false;
+
+    for ch in value.chars() {
+        let lower = ch.to_ascii_lowercase();
+        if lower.is_ascii_alphanumeric() {
+            slug.push(lower);
+            last_was_dash = false;
+        } else if !last_was_dash {
+            slug.push('-');
+            last_was_dash = true;
+        }
+    }
+
+    slug.trim_matches('-').to_string()
+}
+
+fn build_plugin_id(
+    owner: &str,
+    repo_name: &str,
+    manifest_path: &str,
+    is_multi_module: bool,
+) -> String {
+    if !is_multi_module {
+        return format!("{}/{}", owner, repo_name);
+    }
+
+    let module_key = module_key_from_manifest_path(manifest_path);
+    let suffix = if module_key.is_empty() {
+        "root".to_string()
+    } else {
+        slugify_segment(&module_key)
+    };
+
+    format!("{}/{}--{}", owner, repo_name, suffix)
+}
+
+pub fn build_plugins_from_nukkit(repo: &Repository, manifest_paths: &[String]) -> Vec<Plugin> {
+    build_plugins_from_nukkit_with_tree(repo, manifest_paths, None)
+}
+
+pub fn build_plugins_from_nukkit_with_tree(
+    repo: &Repository,
+    manifest_paths: &[String],
+    prefetched_tree: Option<Vec<GitTreeEntry>>,
+) -> Vec<Plugin> {
     let (owner, repo_name) = match repo.full_name.split_once('/') {
         Some((o, r)) => (o, r),
         None => {
@@ -414,24 +449,13 @@ pub fn build_plugins_from_repo(repo: &Repository, gradle_paths: &[String]) -> Ve
 
     let default_branch = repo.default_branch.as_deref().unwrap_or("main");
 
-    let tree = get_tree(owner, repo_name, default_branch);
+    let manifest_groups = group_manifest_paths(manifest_paths);
+    if manifest_groups.is_empty() {
+        debug!(repo = %repo.full_name, "Skip: no plugin manifests found");
+        return Vec::new();
+    }
 
-    let paths_to_check = if gradle_paths.is_empty() {
-        find_gradle_paths_from_tree(&tree)
-    } else {
-        gradle_paths.to_vec()
-    };
-
-    let mut dsl =
-        match find_first_allay_dsl(owner, repo_name, &paths_to_check, &repo.full_name, &tree) {
-            Some(d) => d,
-            None => {
-                debug!(repo = %repo.full_name, "Skip: no valid gradle modules found");
-                return Vec::new();
-            }
-        };
-
-    resolve_dsl_versions(&mut dsl, &tree, owner, repo_name);
+    let tree = prefetched_tree.unwrap_or_else(|| get_tree(owner, repo_name, default_branch));
 
     let releases = client().get_releases(owner, repo_name).unwrap_or_default();
     let readme = client().get_readme(owner, repo_name).unwrap_or_default();
@@ -456,8 +480,7 @@ pub fn build_plugins_from_repo(repo: &Repository, gradle_paths: &[String]) -> Ve
             } else if is_valid_spdx {
                 format!("https://spdx.org/licenses/{}.html", spdx_id)
             } else {
-                let branch = repo.default_branch.as_deref().unwrap_or("main");
-                format!("{}/blob/{}/LICENSE", repo.html_url, branch)
+                format!("{}/blob/{}/LICENSE", repo.html_url, default_branch)
             };
 
             License {
@@ -472,120 +495,221 @@ pub fn build_plugins_from_repo(repo: &Repository, gradle_paths: &[String]) -> Ve
         .unwrap_or_else(|| repo.owner.avatar_url.clone());
     let repo_gallery = find_gallery_items(&tree, owner, repo_name, default_branch);
 
-    let input = PluginBuildInput {
-        repo,
-        dsl: &dsl,
-        releases: &releases,
-        readme: &readme,
-        license: &license,
-        contributors: &contributors,
-        owner,
-        repo_name,
-        branch: default_branch,
-        icon_url: &icon_url,
-        repo_gallery,
-    };
+    let is_multi_module = manifest_groups.len() > 1;
+    let mut plugins = Vec::new();
 
-    match build_plugin_from_repo_data(input) {
-        Some(plugin) => vec![plugin],
-        None => Vec::new(),
+    for manifest_group in manifest_groups {
+        let Some(manifest_path) = select_primary_manifest_path(&manifest_group) else {
+            continue;
+        };
+
+        let Some(target_detection) = detect_targets(&tree, repo, &manifest_group) else {
+            debug!(repo = %repo.full_name, manifest = %manifest_path, "Skip: no supported targets detected");
+            continue;
+        };
+
+        let yml_content = match client().get_file_content(owner, repo_name, manifest_path) {
+            Ok(content) => content,
+            Err(e) => {
+                debug!(repo = %repo.full_name, manifest = %manifest_path, error = %e, "Failed to read manifest");
+                continue;
+            }
+        };
+
+        let nukkit_yml = match crate::nukkit::NukkitPluginYml::from_str(&yml_content) {
+            Ok(yml) => yml,
+            Err(e) => {
+                debug!(repo = %repo.full_name, manifest = %manifest_path, error = %e, "Failed to parse manifest");
+                continue;
+            }
+        };
+
+        if let Some(plugin) = nukkit_yml_to_plugin(
+            nukkit_yml,
+            repo,
+            &releases,
+            &readme,
+            &license,
+            &contributors,
+            owner,
+            repo_name,
+            default_branch,
+            &icon_url,
+            repo_gallery.clone(),
+            manifest_path,
+            &target_detection,
+            is_multi_module,
+        ) {
+            plugins.push(plugin);
+        }
     }
+
+    plugins
 }
 
-fn build_plugin_from_repo_data(input: PluginBuildInput) -> Option<Plugin> {
-    let PluginBuildInput {
-        repo,
-        dsl,
-        releases,
-        readme,
-        license,
-        contributors,
-        owner,
-        repo_name,
-        branch,
-        icon_url,
-        repo_gallery,
-    } = input;
-    let plugin_dsl = match dsl.plugin.as_ref() {
-        Some(p) => p,
-        None => {
-            debug!(repo = %repo.full_name, "Skip: no plugin DSL");
-            return None;
-        }
-    };
+fn is_placeholder(s: &str) -> bool {
+    // Detect unresolved placeholders like ${project.name} or @project.name@
+    let trimmed = s.trim();
+    (trimmed.starts_with("${") && trimmed.ends_with('}') && trimmed.len() > 3)
+        || (trimmed.starts_with('@') && trimmed.ends_with('@') && trimmed.len() > 2)
+}
 
-    let plugin_name = plugin_dsl.name.clone().unwrap_or_else(|| repo.name.clone());
-
-    let plugin_id = format!("{}/{}", owner, plugin_name).to_lowercase();
-
-    let versions: Vec<Version> = releases
-        .iter()
-        .filter(|r| !r.draft)
-        .map(build_version)
-        .filter(|v| !v.files.is_empty())
-        .collect();
-
-    let total_downloads: u64 = versions.iter().map(|v| v.downloads).sum();
-
-    let summary = plugin_dsl
-        .description
-        .clone()
-        .or_else(|| repo.description.clone())
-        .unwrap_or_default();
-
-    let website = plugin_dsl.website.clone().unwrap_or_default();
-
-    let authors = build_authors(plugin_dsl, repo, contributors);
-
+fn nukkit_yml_to_plugin(
+    yml: crate::nukkit::NukkitPluginYml,
+    repo: &Repository,
+    releases: &[Release],
+    readme: &str,
+    license: &License,
+    _contributors: &[Contributor],
+    owner: &str,
+    repo_name: &str,
+    branch: &str,
+    icon_url: &str,
+    repo_gallery: Vec<GalleryItem>,
+    manifest_path: &str,
+    target_detection: &TargetDetection,
+    is_multi_module: bool,
+) -> Option<Plugin> {
     let ctx = PostProcessContext {
         owner,
         repo: repo_name,
         branch,
     };
-    let (processed_readme, readme_gallery) = process_readme(readme, &ctx);
 
-    let mut gallery = repo_gallery;
-    let existing_urls: std::collections::HashSet<String> =
-        gallery.iter().map(|g| g.url.clone()).collect();
-    for item in readme_gallery {
-        if !existing_urls.contains(&item.url) {
-            gallery.push(item);
-        }
-    }
+    let (processed_readme, mut gallery) = process_readme(readme, &ctx);
+    gallery.extend(repo_gallery);
 
-    let api_version = dsl
-        .api
-        .clone()
-        .or_else(|| plugin_dsl.api_version.clone())
-        .unwrap_or_default();
-
-    let server_version = dsl.server.clone().unwrap_or_default();
-
-    let dependencies: Vec<Dependency> = plugin_dsl
-        .dependencies
-        .iter()
-        .map(|d| Dependency {
-            plugin_id: d.name.to_lowercase(),
-            version_range: d.version.clone().unwrap_or_default(),
-            dependency_type: if d.optional { "optional" } else { "required" }.to_string(),
+    let authors = yml
+        .all_authors()
+        .into_iter()
+        .map(|name| Author {
+            name,
+            url: String::new(),
+            avatar_url: String::new(),
         })
         .collect();
 
+    let mut all_dependencies: Vec<Dependency> = yml
+        .depend
+        .iter()
+        .map(|name| Dependency {
+            plugin_id: name.clone(),
+            version_range: String::new(),
+            dependency_type: "required".to_string(),
+        })
+        .collect();
+
+    all_dependencies.extend(yml.softdepend.iter().map(|name| Dependency {
+        plugin_id: name.clone(),
+        version_range: String::new(),
+        dependency_type: "optional".to_string(),
+    }));
+
+    // Build versions from releases
+    let versions: Vec<Version> = releases
+        .iter()
+        .filter_map(|release| {
+            let files: Vec<VersionFile> = release
+                .assets
+                .iter()
+                .filter(|a| a.name.ends_with(".jar"))
+                .map(|a| VersionFile {
+                    filename: a.name.clone(),
+                    url: a.browser_download_url.clone(),
+                    size: a.size,
+                    primary: true,
+                })
+                .collect();
+
+            if files.is_empty() {
+                debug!(
+                    repo = %repo.full_name,
+                    release = %release.tag_name,
+                    "Skipping release without .jar assets"
+                );
+                return None;
+            }
+
+            Some(Version {
+                version: release.tag_name.clone(),
+                name: release
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| release.tag_name.clone()),
+                prerelease: release.prerelease,
+                changelog: release.body.clone().unwrap_or_default(),
+                files,
+                downloads: 0,
+                published_at: parse_timestamp(&release.published_at),
+            })
+        })
+        .collect();
+    let api_version = yml
+        .api
+        .primary()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty() && !is_placeholder(v))
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let categories: Vec<String> = repo
+        .topics
+        .iter()
+        .filter_map(|t| {
+            // Strip "nukkit-" prefix if present
+            let normalized = t.strip_prefix("nukkit-").unwrap_or(t);
+            if CATEGORIES.contains(&normalized) {
+                Some(normalized.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Handle placeholder names by falling back to repo name
+    let plugin_name = if is_placeholder(&yml.name) || yml.name.trim().is_empty() {
+        debug!(
+            repo = %repo.full_name,
+            original = %yml.name,
+            "Using repo name as fallback for placeholder"
+        );
+        repo_name.to_string()
+    } else {
+        yml.name.trim().to_string()
+    };
+
+    let summary = match yml.description.as_deref().map(str::trim) {
+        Some(text) if !text.is_empty() && !is_placeholder(text) => text.to_string(),
+        _ => repo
+            .description
+            .clone()
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+    };
+
     Some(Plugin {
-        id: plugin_id,
+        id: build_plugin_id(owner, repo_name, manifest_path, is_multi_module),
         name: plugin_name,
         source: repo.html_url.clone(),
+        targets: target_detection.targets.clone(),
+        primary_target: target_detection
+            .targets
+            .first()
+            .cloned()
+            .unwrap_or_default(),
+        manifest_path: manifest_path.to_string(),
+        detection_confidence: target_detection.confidence.as_str().to_string(),
         summary,
         description: processed_readme,
         authors,
-        categories: build_categories(&repo.topics),
+        categories,
         license: license.clone(),
-        links: Some(Links {
-            homepage: website,
+        links: yml.website.as_ref().map(|w| Links {
+            homepage: w.clone(),
             wiki: String::new(),
             discord: String::new(),
         }),
-        downloads: total_downloads,
+        downloads: 0,
         stars: repo.stargazers_count,
         created_at: parse_timestamp(&repo.created_at),
         updated_at: parse_timestamp(&repo.updated_at),
@@ -593,115 +717,165 @@ fn build_plugin_from_repo_data(input: PluginBuildInput) -> Option<Plugin> {
         gallery,
         versions,
         api_version,
-        server_version,
-        dependencies,
+        server_version: String::new(),
+        dependencies: all_dependencies,
         preserved_fields: Default::default(),
     })
 }
 
-fn build_version(release: &Release) -> Version {
-    let jars: Vec<_> = release
-        .assets
-        .iter()
-        .filter(|a| a.name.ends_with(".jar") || a.name.ends_with(".zip"))
-        .collect();
+#[cfg(test)]
+mod tests {
+    use super::{
+        build_plugin_id, detect_targets_from_build_content, group_manifest_paths,
+        is_plugin_manifest_path,
+    };
 
-    let primary_jar = jars
-        .iter()
-        .find(|a| a.name.to_lowercase().contains("allay"))
-        .or_else(|| jars.first())
-        .map(|a| a.name.as_str());
+    #[test]
+    fn detects_supported_nukkit_markers() {
+        let gradle = r#"
+            repositories {
+                maven { url = uri("https://repo.opencollab.dev/maven-releases/") }
+            }
 
-    let files: Vec<VersionFile> = jars
-        .iter()
-        .map(|a| VersionFile {
-            filename: a.name.clone(),
-            url: a.browser_download_url.clone(),
-            size: a.size,
-            primary: primary_jar == Some(a.name.as_str()),
-        })
-        .collect();
+            dependencies {
+                compileOnly("cn.nukkit:nukkit:1.0-SNAPSHOT")
+            }
+        "#;
 
-    let total_downloads: u64 = jars.iter().map(|a| a.download_count).sum();
-
-    Version {
-        version: normalize_version(&release.tag_name),
-        name: release.name.clone().unwrap_or_else(|| release.tag_name.clone()),
-        prerelease: release.prerelease,
-        changelog: release.body.clone().unwrap_or_default(),
-        files,
-        downloads: total_downloads,
-        published_at: parse_timestamp(&release.published_at),
-    }
-}
-
-fn build_categories(topics: &[String]) -> Vec<String> {
-    let valid_ids: std::collections::HashSet<&str> = CATEGORIES.iter().copied().collect();
-    let categories: Vec<String> = topics
-        .iter()
-        .filter(|t| valid_ids.contains(t.as_str()))
-        .cloned()
-        .collect();
-    if categories.is_empty() {
-        vec!["utility".to_string()]
-    } else {
-        categories
-    }
-}
-
-fn build_authors(
-    plugin_dsl: &crate::gradle::PluginDsl,
-    repo: &Repository,
-    contributors: &[Contributor],
-) -> Vec<Author> {
-    let mut authors = vec![Author {
-        name: repo.owner.login.clone(),
-        url: repo.owner.html_url.clone(),
-        avatar_url: repo.owner.avatar_url.clone(),
-    }];
-
-    let owner_lower = repo.owner.login.to_lowercase();
-    for name in &plugin_dsl.authors {
-        let name_lower = name.to_lowercase();
-        if name_lower == owner_lower {
-            continue;
-        }
-
-        if let Some(contributor) = contributors
-            .iter()
-            .find(|c| c.login.to_lowercase() == name_lower)
-        {
-            authors.push(Author {
-                name: contributor.login.clone(),
-                url: contributor.html_url.clone(),
-                avatar_url: contributor.avatar_url.clone(),
-            });
-        }
+        let (targets, confidence) = detect_targets_from_build_content(&gradle.to_lowercase());
+        assert_eq!(targets.into_iter().collect::<Vec<_>>(), vec!["nkx"]);
+        assert_eq!(confidence.as_str(), "high");
     }
 
-    authors
-}
+    #[test]
+    fn detects_powernukkitx_targets() {
+        let gradle = r#"
+            dependencies {
+                compileOnly("cn.powernukkitx:powernukkitx:1.20.0-r1")
+            }
+        "#;
 
-fn normalize_version(tag: &str) -> String {
-    tag.trim_start_matches('v').to_string()
-}
-
-pub fn parse_timestamp(s: &str) -> u64 {
-    chrono::DateTime::parse_from_rfc3339(s)
-        .map(|dt| dt.timestamp() as u64)
-        .unwrap_or(0)
-}
-
-pub fn parse_github_url(url: &str) -> Option<(String, String)> {
-    let url = url.trim_end_matches('/');
-    let parts: Vec<&str> = url.split('/').collect();
-
-    if parts.len() >= 2 {
-        let repo = parts[parts.len() - 1].to_string();
-        let owner = parts[parts.len() - 2].to_string();
-        if !owner.is_empty() && !repo.is_empty() {
-            return Some((owner, repo));
-        }
+        let (targets, confidence) = detect_targets_from_build_content(&gradle.to_lowercase());
+        assert_eq!(targets.into_iter().collect::<Vec<_>>(), vec!["pnx"]);
+        assert_eq!(confidence.as_str(), "high");
     }
-    None
+
+    #[test]
+    fn detects_nukkit_mot_targets_without_motci() {
+        let gradle = r#"
+            repositories {
+                maven { url = uri("https://repo.nukkit-mot.com/releases") }
+            }
+
+            dependencies {
+                compileOnly("com.memoriesoftime:nukkit-mot:1.0.0")
+            }
+        "#;
+
+        let (targets, confidence) = detect_targets_from_build_content(&gradle.to_lowercase());
+        assert_eq!(targets.into_iter().collect::<Vec<_>>(), vec!["nkmot"]);
+        assert_eq!(confidence.as_str(), "high");
+    }
+
+    #[test]
+    fn does_not_treat_motci_as_runtime_target_signal() {
+        let gradle = r#"
+            repositories {
+                maven { url = uri("https://motci.cn/repository/maven-public/") }
+            }
+        "#;
+
+        let (targets, confidence) = detect_targets_from_build_content(&gradle.to_lowercase());
+        assert!(targets.is_empty());
+        assert_eq!(confidence.as_str(), "low");
+    }
+
+    #[test]
+    fn detects_lumi_targets() {
+        let gradle = r#"
+            repositories {
+                maven { url = uri("https://repo.luminiadev.com/snapshots") }
+            }
+
+            dependencies {
+                compileOnly("com.koshakmine:Lumi:1.5.0-SNAPSHOT")
+            }
+        "#;
+
+        let (targets, confidence) = detect_targets_from_build_content(&gradle.to_lowercase());
+        assert_eq!(targets.into_iter().collect::<Vec<_>>(), vec!["lumi"]);
+        assert_eq!(confidence.as_str(), "high");
+    }
+
+    #[test]
+    fn detects_lumi_targets_in_maven_pom() {
+        let pom = r#"
+            <dependency>
+                <groupId>com.koshakmine</groupId>
+                <artifactId>Lumi</artifactId>
+                <version>1.5.0-SNAPSHOT</version>
+            </dependency>
+        "#;
+
+        let (targets, confidence) = detect_targets_from_build_content(&pom.to_lowercase());
+        assert_eq!(targets.into_iter().collect::<Vec<_>>(), vec!["lumi"]);
+        assert_eq!(confidence.as_str(), "high");
+    }
+
+    #[test]
+    fn treats_cn_nukkit_as_shared_nkx_and_nkmot_support() {
+        let gradle = r#"
+            dependencies {
+                compileOnly("cn.nukkit:nukkit:1.0-SNAPSHOT")
+            }
+        "#;
+
+        let (targets, confidence) = detect_targets_from_build_content(&gradle.to_lowercase());
+        assert_eq!(
+            targets.into_iter().collect::<Vec<_>>(),
+            vec!["nkmot", "nkx"]
+        );
+        assert_eq!(confidence.as_str(), "medium");
+    }
+
+    #[test]
+    fn detects_supported_manifest_paths() {
+        assert!(is_plugin_manifest_path("src/main/resources/plugin.yml"));
+        assert!(is_plugin_manifest_path(
+            "modules/foo/src/main/resources/powernukkitx.yml"
+        ));
+        assert!(!is_plugin_manifest_path(
+            "src/main/resources/not-plugin.yaml"
+        ));
+    }
+
+    #[test]
+    fn groups_manifest_paths_by_module() {
+        let groups = group_manifest_paths(&[
+            "src/main/resources/plugin.yml".to_string(),
+            "src/main/resources/powernukkitx.yml".to_string(),
+            "modules/economy/src/main/resources/plugin.yml".to_string(),
+        ]);
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].len(), 2);
+        assert_eq!(groups[1].len(), 1);
+    }
+
+    #[test]
+    fn uses_module_suffix_for_multi_module_plugin_ids() {
+        assert_eq!(
+            build_plugin_id("owner", "repo", "src/main/resources/plugin.yml", false),
+            "owner/repo"
+        );
+        assert_eq!(
+            build_plugin_id(
+                "owner",
+                "repo",
+                "modules/economy/src/main/resources/plugin.yml",
+                true,
+            ),
+            "owner/repo--modules-economy"
+        );
+    }
 }
