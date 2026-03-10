@@ -34,7 +34,7 @@
     "@prettier/plugin-xml": "^3.4.2",
     "@types/dompurify": "^3.2.0",
     "@types/iso-3166-2": "^1.0.4",
-    "@types/node": "^20.19.30",Ï
+    "@types/node": "^20.19.30",
     "@types/semver": "^7.7.1",
     "autoprefixer": "^10.4.23",
     "glob": "^10.5.0",
