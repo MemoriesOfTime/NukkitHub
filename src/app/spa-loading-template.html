@@ -1,0 +1,82 @@
+<div class="app-loader">
+  <div class="app-loader__spinner" aria-hidden="true"></div>
+  <div class="app-loader__brand">NukkitHub</div>
+  <div class="app-loader__hint">Loading plugins…</div>
+</div>
+
+<style>
+  html,
+  body {
+    margin: 0;
+    min-height: 100%;
+    background: #0b1020;
+    color: #f8fafc;
+    font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+
+  body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 24px;
+    box-sizing: border-box;
+    background-image: radial-gradient(circle at top, rgba(27, 217, 106, 0.18), transparent 40%);
+  }
+
+  .app-loader {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    width: min(100%, 320px);
+    text-align: center;
+  }
+
+  .app-loader__spinner {
+    width: 44px;
+    height: 44px;
+    border: 3px solid rgba(248, 250, 252, 0.16);
+    border-top-color: #1bd96a;
+    border-radius: 9999px;
+    animation: app-loader-spin 0.8s linear infinite;
+  }
+
+  .app-loader__brand {
+    font-size: 1.5rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+  }
+
+  .app-loader__hint {
+    color: rgba(248, 250, 252, 0.72);
+    font-size: 0.95rem;
+  }
+
+  @media (prefers-color-scheme: light) {
+    html,
+    body {
+      background: #f8fafc;
+      color: #0f172a;
+    }
+
+    body {
+      background-image: radial-gradient(circle at top, rgba(27, 217, 106, 0.14), transparent 42%);
+    }
+
+    .app-loader__spinner {
+      border-color: rgba(15, 23, 42, 0.14);
+      border-top-color: #16a34a;
+    }
+
+    .app-loader__hint {
+      color: rgba(15, 23, 42, 0.68);
+    }
+  }
+
+  @keyframes app-loader-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+</style>

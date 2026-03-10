@@ -132,7 +132,7 @@ const props = defineProps<{
 }>()
 
 const title = `${props.project.title} - Gallery`
-const description = `View ${props.project.gallery?.length || 0} images of ${props.project.title} on AllayHub.`
+const description = `View ${props.project.gallery?.length || 0} images of ${props.project.title} on NukkitHub.`
 
 useSeoMeta({
   title,

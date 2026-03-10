@@ -1,18 +1,13 @@
-import { toValue, type Ref, type ComputedRef } from 'vue'
+import {type ComputedRef, type Ref, toValue} from 'vue'
 import type AllayIndex from '~/types/allayhub-index'
-import { CATEGORIES, API_VERSIONS } from '~/types/allayhub'
-import {
-  searchPlugins,
-  getAllPlugins,
-  type OramaSearchFilters,
-  type PluginDocument,
-} from './orama-loader'
+import {getAllPlugins, type OramaSearchFilters, type PluginDocument, searchPlugins,} from './orama-loader'
 
 export type SortOption = 'downloads' | 'stars' | 'updated' | 'newest'
 
 export interface SearchFilters {
   query?: string
   categories?: string[]
+  targets?: string[]
   apiMajor?: number
   license?: 'open-source' | 'closed-source'
 }
@@ -24,30 +19,27 @@ export interface SearchOptions {
   perPage?: number
 }
 
-/**
- * Get categories (static data)
- */
-export function useCategories() {
-  return { data: ref({ categories: CATEGORIES }) }
-}
-
-/**
- * Get Allay API versions (static data)
- */
-export function useApiVersions() {
-  return { data: ref({ versions: API_VERSIONS }) }
-}
-
 // Pre-load all plugin JSON files at build time using Vite's import.meta.glob
-// From src/composables/ to AllayHubIndex/ requires ../../
-// Plugins are stored in subdirectories: AllayHubIndex/{owner}/{name}.json
+// From src/composables/ to NukkitHubIndex/ requires ../../
+// Plugins are stored in subdirectories: NukkitHubIndex/{owner}/{name}.json
 const pluginModules = import.meta.glob<AllayIndex.Plugin>(
-  '../../AllayHubIndex/**/*.json',
+  '../../NukkitHubIndex/**/*.json',
   {
     eager: false,
     import: 'default',
   },
 )
+
+function isTemplatePlaceholder(value: unknown): value is string {
+  if (typeof value !== 'string') return false
+  const text = value.trim()
+  return /^\$\{[^}]+\}$/.test(text) || /^@[^@\r\n]+@$/.test(text)
+}
+
+function getRepoNameFromId(id: string): string {
+  const [, repo] = id.split('/')
+  return repo || id
+}
 
 function processPluginData(data: AllayIndex.Plugin): AllayIndex.Plugin {
   const result: Record<string, unknown> = { ...data }
@@ -60,6 +52,20 @@ function processPluginData(data: AllayIndex.Plugin): AllayIndex.Plugin {
       delete result[key]
     }
   }
+
+  const pluginId = typeof result.id === 'string' ? result.id : ''
+  const fallbackName = getRepoNameFromId(pluginId)
+  const rawName = typeof result.name === 'string' ? result.name.trim() : ''
+  if (!rawName || isTemplatePlaceholder(rawName)) {
+    result.name = fallbackName || 'Unknown Plugin'
+  }
+
+  const rawSummary =
+    typeof result.summary === 'string' ? result.summary.trim() : ''
+  if (isTemplatePlaceholder(rawSummary)) {
+    result.summary = ''
+  }
+
   return result as unknown as AllayIndex.Plugin
 }
 
@@ -74,7 +80,7 @@ export function findPluginIdsByName(name: string): string[] {
   const results: string[] = []
   for (const key of Object.keys(pluginModules)) {
     if (key.toLowerCase().endsWith(suffix.toLowerCase())) {
-      const match = key.match(/AllayHubIndex\/(.+)\.json$/)
+      const match = key.match(/NukkitHubIndex\/(.+)\.json$/)
       if (match) results.push(match[1])
     }
   }
@@ -93,7 +99,7 @@ export function usePlugin(
   return useAsyncData<AllayIndex.Plugin>(
     `plugin-${id}`,
     async () => {
-      const modulePath = `../../AllayHubIndex/${id}.json`
+      const modulePath = `../../NukkitHubIndex/${id}.json`
       const loader = pluginModules[modulePath]
       if (!loader) {
         throw new Error(`Plugin not found: ${id}`)
@@ -171,12 +177,24 @@ export function getTotalPages(totalItems: number, perPage: number): number {
 }
 
 function toPluginSummary(doc: PluginDocument): AllayIndex.PluginSummary {
+  const displayName = doc.display_name?.trim() || ''
+  const fallbackName = getRepoNameFromId(doc.id)
+  const safeName =
+    displayName && !isTemplatePlaceholder(displayName)
+      ? displayName
+      : fallbackName
+
+  const summary = doc.summary?.trim() || ''
+  const safeSummary = isTemplatePlaceholder(summary) ? '' : summary
+
   return {
     id: doc.id,
-    name: doc.display_name,
-    summary: doc.summary,
+    name: safeName,
+    summary: safeSummary,
     author: doc.author,
     categories: doc.categories,
+    targets: doc.targets,
+    primary_target: doc.primary_target,
     api_version: doc.api_version,
     license: doc.license,
     downloads: doc.downloads,
@@ -186,6 +204,11 @@ function toPluginSummary(doc: PluginDocument): AllayIndex.PluginSummary {
     icon_url: doc.icon_url || undefined,
     gallery_image: doc.gallery_image || undefined,
   }
+}
+
+export interface PluginSearchResult {
+  results: AllayIndex.PluginSummary[]
+  count: number
 }
 
 /**
@@ -199,8 +222,8 @@ export function usePluginSearch() {
   async function search(
     filters: SearchFilters = {},
     options: SearchOptions = {},
-  ): Promise<AllayIndex.PluginSummary[]> {
-    const { query, categories, apiMajor, license } = filters
+  ): Promise<PluginSearchResult> {
+    const { query, categories, targets, apiMajor, license } = filters
     const { sort = 'downloads', limit, page, perPage = 20 } = options
 
     isSearching.value = true
@@ -210,6 +233,9 @@ export function usePluginSearch() {
       const oramaFilters: OramaSearchFilters = {}
       if (categories?.length) {
         oramaFilters.categories = categories
+      }
+      if (targets?.length) {
+        oramaFilters.targets = targets
       }
       if (license) {
         oramaFilters.license = license
@@ -230,61 +256,45 @@ export function usePluginSearch() {
       })
 
       isIndexLoaded.value = true
-      return results.hits.map(toPluginSummary)
+      return {
+        results: results.hits.map(toPluginSummary),
+        count: results.count,
+      }
     } catch (e) {
       searchError.value = e as Error
       console.error('Search error:', e)
-      return []
+      return { results: [], count: 0 }
     } finally {
       isSearching.value = false
     }
-  }
-
-  async function getTotalCount(filters: SearchFilters = {}): Promise<number> {
-    const { query, categories, apiMajor, license } = filters
-
-    const oramaFilters: OramaSearchFilters = {}
-    if (categories?.length) {
-      oramaFilters.categories = categories
-    }
-    if (license) {
-      oramaFilters.license = license
-    }
-    if (apiMajor !== undefined) {
-      oramaFilters.apiMajor = apiMajor
-    }
-
-    const results = await searchPlugins({
-      term: query?.trim() || '',
-      filters: oramaFilters,
-      limit: 10000,
-    })
-
-    return results.count
   }
 
   async function getByCategory(
     categoryId: string,
     options: SearchOptions = {},
   ): Promise<AllayIndex.PluginSummary[]> {
-    return search(
+    const result = await search(
       { categories: [categoryId] },
       { sort: 'downloads', ...options },
     )
+    return result.results
   }
 
   async function getRecentlyUpdated(
     limit = 10,
   ): Promise<AllayIndex.PluginSummary[]> {
-    return search({}, { sort: 'updated', limit })
+    const result = await search({}, { sort: 'updated', limit })
+    return result.results
   }
 
   async function getPopular(limit = 10): Promise<AllayIndex.PluginSummary[]> {
-    return search({}, { sort: 'downloads', limit })
+    const result = await search({}, { sort: 'downloads', limit })
+    return result.results
   }
 
   async function getFeatured(limit = 10): Promise<AllayIndex.PluginSummary[]> {
-    return search({}, { sort: 'stars', limit })
+    const result = await search({}, { sort: 'stars', limit })
+    return result.results
   }
 
   async function preloadIndex(): Promise<void> {
@@ -301,7 +311,6 @@ export function usePluginSearch() {
     searchError,
     isIndexLoaded,
     search,
-    getTotalCount,
     getByCategory,
     getRecentlyUpdated,
     getPopular,

@@ -396,7 +396,7 @@
     "message": "Binibigyang-daan ng bukas na pinagmulang API ng AllayHub ang mga tagapaglunsad na makadagdag ng malalimang pagsasama sa AllayHub. Maaari mong gamitin ang AllayHub sa <link>aming aplikasyon</link> at sa iilang pinakasikat na mga tagapaglunsad gaya ng ATLauncher, MultiMC, at Prism Launcher."
   },
   "landing.heading.the-place-for-minecraft": {
-    "message": "Ang pook para sa Allay na {content}"
+    "message": "Ang pook para sa {server} na {content}"
   },
   "landing.heading.the-place-for-minecraft.data-packs": {
     "message": "mga balot ng malak"

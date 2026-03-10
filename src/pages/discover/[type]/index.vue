@@ -1,37 +1,26 @@
 <script setup lang="ts">
-import {
-  FilterIcon,
-  GridIcon,
-  ImageIcon,
-  ListIcon,
-  SearchIcon,
-  XIcon,
-} from '@modrinth/assets'
-import { defineMessages, useVIntl } from '@modrinth/ui'
+import {FilterIcon, GridIcon, ImageIcon, ListIcon, SearchIcon, XIcon,} from '@modrinth/assets'
+import type {FilterType, FilterValue} from '@modrinth/ui'
 import {
   Button,
   ButtonStyled,
+  defineMessages,
   DropdownSelect,
   Pagination,
-  SearchSidebarFilter,
   SearchFilterControl,
+  SearchSidebarFilter,
+  useVIntl
 } from '@modrinth/ui'
-import type { FilterType, FilterValue } from '@modrinth/ui'
-import { capitalizeString, cycleValue } from '@modrinth/utils'
-import { useThrottleFn } from '@vueuse/core'
+import {capitalizeString, cycleValue} from '@modrinth/utils'
+import {useThrottleFn} from '@vueuse/core'
 import semver from 'semver'
-import { computed, watch } from 'vue'
+import {computed, watch} from 'vue'
 
 import LogoAnimated from '~/components/brand/LogoAnimated.vue'
 import ProjectCard from '~/components/ui/ProjectCard.vue'
-import type { DisplayLocation, DisplayMode } from '~/plugins/cosmetics.ts'
-import {
-  usePluginSearch,
-  type SortOption,
-  getTotalPages,
-  useCategories,
-  useApiVersions,
-} from '~/composables/usePlugins'
+import type {DisplayLocation, DisplayMode} from '~/plugins/cosmetics.ts'
+import {getTotalPages, type SortOption, usePluginSearch,} from '~/composables/usePlugins'
+import {useApiVersions, useCategories, usePluginTargets,} from '~/composables/useProjectTaxonomy'
 
 const { formatMessage } = useVIntl()
 
@@ -47,6 +36,7 @@ const flags = useFeatureFlags()
 const { search, isSearching } = usePluginSearch()
 const { data: categoriesData } = useCategories()
 const { data: apiVersionsData } = useApiVersions()
+const { data: pluginTargetsData } = usePluginTargets()
 
 // Search state
 const query = ref((route.query.q as string) ?? '')
@@ -66,6 +56,14 @@ const selectedCategories = computed(() =>
     .filter((f) => f.type === 'categories' && !f.negative)
     .map((f) => f.option),
 )
+
+const selectedTargets = computed(() =>
+  currentFilters.value
+    .filter((f) => f.type === 'targets' && !f.negative)
+    .map((f) => f.option),
+)
+
+const hasSelectedTargets = computed(() => selectedTargets.value.length > 0)
 
 // Computed selected API major version from filters (max of selected versions)
 const selectedApiMajor = computed(() => {
@@ -121,6 +119,8 @@ const pageCount = computed(() =>
 // Categories for filter sidebar
 const categories = computed(() => categoriesData.value?.categories ?? [])
 
+const pluginTargets = computed(() => pluginTargetsData.value?.targets ?? [])
+
 // API versions for filter sidebar
 const apiVersions = computed(() => apiVersionsData.value?.versions ?? [])
 
@@ -145,6 +145,24 @@ function getCategoryIcon(categoryId: string): string | undefined {
 // Filter types for SearchSidebarFilter
 const filters = computed<FilterType[]>(() => {
   const filterTypes: FilterType[] = []
+
+  if (pluginTargets.value.length > 0) {
+    filterTypes.push({
+      id: 'targets',
+      formatted_name: formatMessage(messages.serverTargets),
+      supported_project_types: ['plugin'],
+      display: 'all',
+      query_param: 't',
+      supports_negative_filter: false,
+      searchable: false,
+      options: pluginTargets.value.map((target) => ({
+        id: target.id,
+        formatted_name: target.name,
+        value: `targets:${target.id}`,
+        method: 'or' as const,
+      })),
+    })
+  }
 
   // Categories filter
   if (categories.value.length > 0) {
@@ -238,6 +256,14 @@ const messages = defineMessages({
     id: 'discover.search.categories',
     defaultMessage: 'Categories',
   },
+  serverTargets: {
+    id: 'discover.search.server-targets',
+    defaultMessage: 'Server targets',
+  },
+  allTargets: {
+    id: 'discover.search.all-targets',
+    defaultMessage: 'All runtimes',
+  },
 })
 
 // Build search filters from current state
@@ -248,6 +274,8 @@ function buildSearchFilters() {
       selectedCategories.value.length > 0
         ? selectedCategories.value
         : undefined,
+    targets:
+      selectedTargets.value.length > 0 ? selectedTargets.value : undefined,
     apiMajor: selectedApiMajor.value,
     license: selectedLicense.value,
   }
@@ -257,20 +285,45 @@ function buildSearchFilters() {
 async function performSearch() {
   const filters = buildSearchFilters()
 
-  const results = await search(filters, {
+  const { results, count } = await search(filters, {
     sort: sortType.value,
     page: currentPage.value,
     perPage: perPage.value,
   })
   searchResults.value = results
-
-  // Get total count for pagination
-  const allResults = await search(filters, { limit: 10000 })
-  totalResults.value = allResults.length
+  totalResults.value = count
 }
 
 function scrollToTop(behavior: ScrollBehavior = 'smooth') {
   window.scrollTo({ top: 0, behavior })
+}
+
+function isTargetSelected(targetId: string) {
+  return selectedTargets.value.includes(targetId)
+}
+
+function toggleTargetFilter(targetId: string) {
+  if (isTargetSelected(targetId)) {
+    currentFilters.value = currentFilters.value.filter(
+      (filter) => filter.type !== 'targets' || filter.option !== targetId,
+    )
+    return
+  }
+
+  currentFilters.value = [
+    ...currentFilters.value,
+    {
+      type: 'targets',
+      option: targetId,
+      negative: false,
+    },
+  ]
+}
+
+function clearTargetFilters() {
+  currentFilters.value = currentFilters.value.filter(
+    (filter) => filter.type !== 'targets',
+  )
 }
 
 function updateSearchResults(pageNumber: number = 1, resetScroll = true) {
@@ -290,6 +343,8 @@ function updateSearchResults(pageNumber: number = 1, resetScroll = true) {
     if (perPage.value !== 20) params.pp = String(perPage.value)
     if (selectedCategories.value.length > 0)
       params.c = selectedCategories.value.join(',')
+    if (selectedTargets.value.length > 0)
+      params.t = selectedTargets.value.join(',')
 
     router.replace({ path: route.path, query: params })
   }
@@ -342,6 +397,17 @@ function parseFilterString(
 
 // Initialize search on mount
 onMounted(() => {
+  if (route.query.t) {
+    const targetIds = (route.query.t as string).split(',')
+    targetIds.forEach((targetId) => {
+      currentFilters.value.push({
+        type: 'targets',
+        option: targetId,
+        negative: false,
+      })
+    })
+  }
+
   // Parse URL params for categories
   if (route.query.c) {
     const categoryIds = (route.query.c as string).split(',')
@@ -389,17 +455,18 @@ onMounted(() => {
 })
 
 // SEO
-const ogTitle = computed(
-  () => `Search plugins${query.value ? ' | ' + query.value : ''}`,
+const title = computed(
+  () => `Search plugins${query.value ? ' | ' + query.value : ''} - NukkitHub`,
 )
 const description = computed(
   () =>
-    `Search and browse AllayMC plugins on AllayHub with instant, accurate search results. Our filters help you quickly find the best plugins for your server.`,
+    `Search and browse Nukkit plugins on NukkitHub with instant, accurate search results. Our filters help you quickly find the best plugins for your server.`,
 )
 
 useSeoMeta({
+  title,
   description,
-  ogTitle,
+  ogTitle: title,
   ogDescription: description,
 })
 </script>
@@ -494,6 +561,37 @@ useSeoMeta({
         >
           <XIcon />
         </Button>
+      </div>
+      <div class="target-switcher">
+        <div class="target-switcher__header">
+          <span class="target-switcher__label">{{
+            formatMessage(messages.serverTargets)
+          }}</span>
+          <button
+            class="target-switcher__clear"
+            :class="{ active: !hasSelectedTargets }"
+            type="button"
+            @click="clearTargetFilters()"
+          >
+            {{ formatMessage(messages.allTargets) }}
+          </button>
+        </div>
+        <div class="target-switcher__options">
+          <button
+            v-for="target in pluginTargets"
+            :key="target.id"
+            class="target-switcher__option button-animation"
+            :class="{ active: isTargetSelected(target.id) }"
+            type="button"
+            :title="target.description"
+            @click="toggleTargetFilter(target.id)"
+          >
+            <span class="target-switcher__option-short">{{
+              target.short_name
+            }}</span>
+            <span class="target-switcher__option-name">{{ target.name }}</span>
+          </button>
+        </div>
       </div>
       <div class="flex flex-wrap items-center gap-2">
         <DropdownSelect
@@ -718,6 +816,97 @@ useSeoMeta({
   }
 }
 
+.target-switcher {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.875rem 1rem;
+  border: 1px solid var(--color-button-bg);
+  border-radius: 1rem;
+  background: linear-gradient(
+    135deg,
+    var(--color-bg-raised),
+    color-mix(in srgb, var(--color-brand) 8%, var(--color-bg-raised))
+  );
+}
+
+.target-switcher__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.target-switcher__label {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--color-contrast);
+}
+
+.target-switcher__clear,
+.target-switcher__option {
+  border: 1px solid transparent;
+  background: var(--color-button-bg);
+  color: var(--color-base);
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease,
+    color 0.15s ease,
+    transform 0.15s ease;
+}
+
+.target-switcher__clear {
+  padding: 0.45rem 0.75rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.target-switcher__clear.active,
+.target-switcher__option.active {
+  border-color: color-mix(in srgb, var(--color-brand) 75%, white);
+  background: color-mix(
+    in srgb,
+    var(--color-brand) 18%,
+    var(--color-bg-raised)
+  );
+  color: var(--color-contrast);
+}
+
+.target-switcher__options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.75rem;
+}
+
+.target-switcher__option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
+  padding: 0.8rem 0.9rem;
+  border-radius: 0.9rem;
+  text-align: left;
+}
+
+.target-switcher__option-short {
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-brand);
+}
+
+.target-switcher__option.active .target-switcher__option-short {
+  color: inherit;
+}
+
+.target-switcher__option-name {
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
 .search-controls__sorting {
   min-width: 14rem;
 }
@@ -750,6 +939,12 @@ useSeoMeta({
 
 #search-results {
   min-height: 20vh;
+}
+
+@media screen and (max-width: 639px) {
+  .target-switcher__options {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 
 @media screen and (min-width: 750px) {

@@ -756,7 +756,7 @@
     "message": "Hitta det du vill snabbt och enkelt"
   },
   "landing.heading.the-place-for-minecraft": {
-    "message": "Platsen för Allay {content}"
+    "message": "Platsen för {server} {content}"
   },
   "landing.heading.the-place-for-minecraft.data-packs": {
     "message": "datapacks"

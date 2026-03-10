@@ -10,8 +10,8 @@
   ],
   "scripts": {
     "build": "NODE_OPTIONS=\"--max-old-space-size=8192\" nuxi build",
-    "build:search": "./allayindexer build",
-    "dev": "bun run build:search && nuxi dev",
+    "build:search": "([ -f ./.nukkitindexer-bin ] && [ -x ./.nukkitindexer-bin ] && ./.nukkitindexer-bin build) || cargo run --manifest-path indexer/Cargo.toml -- build",
+    "dev": "bun run build:search && node ./node_modules/nuxt/bin/nuxt.mjs dev --no-fork",
     "generate": "bun run build:search && nuxi generate",
     "preview": "nuxi preview",
     "postinstall": "nuxi prepare",
@@ -34,7 +34,7 @@
     "@prettier/plugin-xml": "^3.4.2",
     "@types/dompurify": "^3.2.0",
     "@types/iso-3166-2": "^1.0.4",
-    "@types/node": "^20.19.30",
+    "@types/node": "^20.19.30",Ï
     "@types/semver": "^7.7.1",
     "autoprefixer": "^10.4.23",
     "glob": "^10.5.0",

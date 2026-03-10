@@ -42,6 +42,11 @@ const errorMessage = computed(() => {
       return props.error.message || 'Something went wrong.'
   }
 })
+
+useSeoMeta({
+  title: () => `${errorTitle.value} - NukkitHub`,
+  description: () => errorMessage.value,
+})
 </script>
 
 <style scoped>

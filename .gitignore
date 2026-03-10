@@ -58,11 +58,13 @@ bun.lockb
 
 !.gitkeep
 
-# AllayHubIndex
-/AllayHubIndex
+# NukkitHubIndex
+/NukkitHubIndex
 **/orama-index.bin
 allayindexer
 allayindexer.exe
+.nukkitindexer-bin
+.nukkitindexer-bin.exe
 .last_sync
 .data_cache.bin.gz
 .update_progress

@@ -954,7 +954,7 @@
     "message": "Vind wat je zoekt, snel en eenvoudig"
   },
   "landing.heading.the-place-for-minecraft": {
-    "message": "Dé plek voor Allay {content}"
+    "message": "Dé plek voor {server} {content}"
   },
   "landing.heading.the-place-for-minecraft.data-packs": {
     "message": "data packs"
@@ -1398,10 +1398,10 @@
     "message": "AllayHub is <github-link>open source</github-link>."
   },
   "layout.footer.allay": {
-    "message": "Allay"
+    "message": "Nukkit-MOT"
   },
   "layout.footer.allay.server": {
-    "message": "Allay Server"
+    "message": "Nukkit-MOT Server"
   },
   "layout.footer.allay.docs": {
     "message": "Documentatie"

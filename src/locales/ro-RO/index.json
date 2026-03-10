@@ -759,7 +759,7 @@
     "message": "Găsește ce vrei, rapid și ușor"
   },
   "landing.heading.the-place-for-minecraft": {
-    "message": "Locul ideal pentru {content} Allay"
+    "message": "Locul ideal pentru {content} {server}"
   },
   "landing.heading.the-place-for-minecraft.data-packs": {
     "message": "pachete de date"

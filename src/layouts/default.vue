@@ -10,7 +10,7 @@
     class="layout"
     :class="{
       'expanded-mobile-nav': isBrowseMenuOpen,
-      'modrinth-parent__no-modal-blurs': !cosmetics.advancedRendering,
+      'modrinth-parent__no-modal-blurs': !cosmetics?.advancedRendering,
     }"
   >
     <header
@@ -23,7 +23,7 @@
           class="group hover:brightness-[--hover-brightness] focus-visible:brightness-[--hover-brightness]"
         >
           <img
-            src="~/assets/icons/allay-chan-40x.png"
+            src="~/assets/icons/mot-chan-40x.png"
             alt=""
             aria-hidden="true"
             class="mr-1 h-7 w-auto transition-transform group-active:scale-[0.98]"
@@ -71,17 +71,6 @@
               }}</span>
               <span class="contents md:hidden">{{
                 formatMessage(navMenuMessages.discover)
-              }}</span>
-            </nuxt-link>
-          </ButtonStyled>
-          <ButtonStyled type="transparent" :highlighted="route.name === 'app'">
-            <nuxt-link to="/app">
-              <DownloadIcon aria-hidden="true" />
-              <span class="hidden md:contents">{{
-                formatMessage(navMenuMessages.getModrinthApp)
-              }}</span>
-              <span class="contents md:hidden">{{
-                formatMessage(navMenuMessages.modrinthApp)
               }}</span>
             </nuxt-link>
           </ButtonStyled>
@@ -184,27 +173,12 @@
   </div>
 </template>
 <script setup>
-import {
-  BookTextIcon,
-  DownloadIcon,
-  HomeIcon,
-  MoonIcon,
-  PlugIcon,
-  SearchIcon,
-  SettingsIcon,
-  SunIcon,
-} from '@modrinth/assets'
-import {
-  ButtonStyled,
-  commonMessages,
-  commonProjectTypeCategoryMessages,
-  defineMessages,
-  useVIntl,
-} from '@modrinth/ui'
+import {BookTextIcon, HomeIcon, MoonIcon, PlugIcon, SearchIcon, SettingsIcon, SunIcon,} from '@modrinth/assets'
+import {ButtonStyled, commonMessages, commonProjectTypeCategoryMessages, defineMessages, useVIntl,} from '@modrinth/ui'
 
 import TextLogo from '~/components/brand/TextLogo.vue'
 import ModrinthFooter from '~/components/ui/ModrinthFooter.vue'
-import { getProjectTypeMessage } from '~/utils/i18n-project-type.ts'
+import {getProjectTypeMessage} from '~/utils/i18n-project-type.ts'
 
 const { formatMessage } = useVIntl()
 
@@ -232,14 +206,6 @@ const navMenuMessages = defineMessages({
     id: 'layout.nav.discover',
     defaultMessage: 'Discover',
   },
-  getModrinthApp: {
-    id: 'layout.nav.get-allay-launcher',
-    defaultMessage: 'Get Launcher',
-  },
-  modrinthApp: {
-    id: 'layout.nav.allay-launcher',
-    defaultMessage: 'Launcher',
-  },
   indexingGuide: {
     id: 'layout.nav.indexing-guide',
     defaultMessage: 'Indexing Guide',
@@ -261,7 +227,7 @@ const messages = defineMessages({
   },
   modrinthHomePage: {
     id: 'layout.nav.allayhub-home-page',
-    defaultMessage: 'AllayHub home page',
+    defaultMessage: 'NukkitHub home page',
   },
   createNew: {
     id: 'layout.action.create-new',
@@ -362,25 +328,25 @@ useHead({
   ],
 })
 useSeoMeta({
-  title: 'AllayHub',
+  title: 'NukkitHub',
   description: () =>
     formatMessage({
       id: 'layout.meta.description',
       defaultMessage:
-        'Discover AllayMC plugins on AllayHub. ' +
-        'Browse and find plugins for your AllayMC Bedrock server with a modern, easy to use interface.',
+        'Discover Nukkit-MOT plugins on NukkitHub. ' +
+        'Browse and find plugins for your Nukkit-MOT Bedrock server with a modern, easy to use interface.',
     }),
-  publisher: 'AllayHub',
+  publisher: 'NukkitHub',
   themeColor: '#1bd96a',
   colorScheme: 'dark light',
 
   // OpenGraph
-  ogTitle: 'AllayHub',
-  ogSiteName: 'AllayHub',
+  ogTitle: 'NukkitHub',
+  ogSiteName: 'NukkitHub',
   ogDescription: () =>
     formatMessage({
       id: 'layout.meta.og-description',
-      defaultMessage: 'Discover AllayMC plugins!',
+      defaultMessage: 'Discover Nukkit-MOT plugins!',
     }),
   ogType: 'website',
   ogUrl: link,

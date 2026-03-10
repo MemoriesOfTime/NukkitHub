@@ -21,26 +21,85 @@ export interface Loader {
   icon?: string
 }
 
+export interface PluginTarget {
+  id: string
+  name: string
+  short_name: string
+  description: string
+}
+
 export const CATEGORIES: Category[] = [
-  { id: 'adventure', name: 'Adventure', description: 'Adventure and exploration plugins' },
+  {
+    id: 'adventure',
+    name: 'Adventure',
+    description: 'Adventure and exploration plugins',
+  },
   { id: 'cursed', name: 'Cursed', description: 'Cursed and challenge plugins' },
-  { id: 'decoration', name: 'Decoration', description: 'Decoration and building plugins' },
-  { id: 'economy', name: 'Economy', description: 'Economy and trading plugins' },
-  { id: 'equipment', name: 'Equipment', description: 'Equipment and gear plugins' },
+  {
+    id: 'decoration',
+    name: 'Decoration',
+    description: 'Decoration and building plugins',
+  },
+  {
+    id: 'economy',
+    name: 'Economy',
+    description: 'Economy and trading plugins',
+  },
+  {
+    id: 'equipment',
+    name: 'Equipment',
+    description: 'Equipment and gear plugins',
+  },
   { id: 'food', name: 'Food', description: 'Food and farming plugins' },
-  { id: 'game-mechanics', name: 'Game Mechanics', description: 'Game mechanics modification plugins' },
-  { id: 'library', name: 'Library', description: 'API libraries for developers' },
+  {
+    id: 'game-mechanics',
+    name: 'Game Mechanics',
+    description: 'Game mechanics modification plugins',
+  },
+  {
+    id: 'library',
+    name: 'Library',
+    description: 'API libraries for developers',
+  },
   { id: 'magic', name: 'Magic', description: 'Magic and spells plugins' },
-  { id: 'management', name: 'Management', description: 'Server management plugins' },
+  {
+    id: 'management',
+    name: 'Management',
+    description: 'Server management plugins',
+  },
   { id: 'minigame', name: 'Minigame', description: 'Minigame plugins' },
   { id: 'mobs', name: 'Mobs', description: 'Mob related plugins' },
-  { id: 'optimization', name: 'Optimization', description: 'Performance optimization plugins' },
-  { id: 'social', name: 'Social', description: 'Social and communication plugins' },
-  { id: 'storage', name: 'Storage', description: 'Storage and inventory plugins' },
-  { id: 'technology', name: 'Technology', description: 'Technology and automation plugins' },
-  { id: 'transportation', name: 'Transportation', description: 'Transportation plugins' },
+  {
+    id: 'optimization',
+    name: 'Optimization',
+    description: 'Performance optimization plugins',
+  },
+  {
+    id: 'social',
+    name: 'Social',
+    description: 'Social and communication plugins',
+  },
+  {
+    id: 'storage',
+    name: 'Storage',
+    description: 'Storage and inventory plugins',
+  },
+  {
+    id: 'technology',
+    name: 'Technology',
+    description: 'Technology and automation plugins',
+  },
+  {
+    id: 'transportation',
+    name: 'Transportation',
+    description: 'Transportation plugins',
+  },
   { id: 'utility', name: 'Utility', description: 'General utility plugins' },
-  { id: 'world-generation', name: 'World Generation', description: 'World generation plugins' },
+  {
+    id: 'world-generation',
+    name: 'World Generation',
+    description: 'World generation plugins',
+  },
 ]
 
 export const API_VERSIONS: ApiVersion[] = [
@@ -57,7 +116,35 @@ export const LOADERS: Loader[] = [
   { id: 'plugin', name: 'Plugin', icon: 'plugin' },
 ]
 
+export const PLUGIN_TARGETS: PluginTarget[] = [
+  {
+    id: 'nkx',
+    name: 'NukkitX',
+    short_name: 'NKX',
+    description: 'Plugins targeting the NukkitX ecosystem',
+  },
+  {
+    id: 'nkmot',
+    name: 'Nukkit-MOT',
+    short_name: 'NKMOT',
+    description: 'Plugins targeting Nukkit-MOT builds and CI releases',
+  },
+  {
+    id: 'pnx',
+    name: 'PowerNukkitX',
+    short_name: 'PNX',
+    description: 'Plugins targeting PowerNukkitX-specific APIs or manifests',
+  },
+  {
+    id: 'lumi',
+    name: 'Lumi',
+    short_name: 'Lumi',
+    description: 'Plugins targeting the Lumi server runtime',
+  },
+]
+
 export type LoaderId = 'plugin'
+export type PluginTargetId = 'nkx' | 'nkmot' | 'pnx' | 'lumi'
 
 export type CategoryId =
   | 'adventure'
@@ -102,4 +189,12 @@ export function getLoaderName(id: string): string {
 
 export function getLoaderIcon(id: string): string | undefined {
   return getLoaderById(id)?.icon
+}
+
+export function getPluginTargetById(id: string): PluginTarget | undefined {
+  return PLUGIN_TARGETS.find((target) => target.id === id)
+}
+
+export function getPluginTargetName(id: string): string {
+  return getPluginTargetById(id)?.name ?? id
 }

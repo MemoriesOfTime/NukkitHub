@@ -762,7 +762,7 @@
     "message": "מצא/י מה שתרצה/י, במהירות וקלות"
   },
   "landing.heading.the-place-for-minecraft": {
-    "message": "המקום ל{content} Allay"
+    "message": "המקום ל{content} {server}"
   },
   "landing.heading.the-place-for-minecraft.data-packs": {
     "message": "חבילות תוכן / Data Packs"

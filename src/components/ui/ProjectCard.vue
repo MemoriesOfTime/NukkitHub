@@ -59,7 +59,7 @@
       />
     </Categories>
     <div class="stats">
-      <div v-if="downloads" class="stat">
+      <div v-if="flags.showDownloadCounts && downloads" class="stat">
         <DownloadIcon aria-hidden="true" />
         <p>
           <strong>{{ $formatNumber(downloads) }}</strong
@@ -103,13 +103,8 @@
 </template>
 
 <script>
-import {
-  CalendarIcon,
-  DownloadIcon,
-  HeartIcon,
-  UpdatedIcon,
-} from '@modrinth/assets'
-import { Avatar, ProjectStatusBadge, useRelativeTime } from '@modrinth/ui'
+import {CalendarIcon, DownloadIcon, HeartIcon, UpdatedIcon,} from '@modrinth/assets'
+import {Avatar, ProjectStatusBadge, useRelativeTime} from '@modrinth/ui'
 
 import EnvironmentIndicator from '~/components/ui/EnvironmentIndicator.vue'
 import Categories from '~/components/ui/search/Categories.vue'
@@ -231,8 +226,9 @@ export default {
   },
   setup() {
     const formatRelativeTime = useRelativeTime()
+    const flags = useFeatureFlags()
 
-    return { formatRelativeTime }
+    return { formatRelativeTime, flags }
   },
   computed: {
     projectTypeDisplay() {

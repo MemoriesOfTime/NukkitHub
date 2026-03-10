@@ -1182,7 +1182,7 @@
     "message": "Temukan apa yang Anda mau, dengan cepat dan mudah"
   },
   "landing.heading.the-place-for-minecraft": {
-    "message": "Tempat untuk {content} Allay"
+    "message": "Tempat untuk {content} {server}"
   },
   "landing.heading.the-place-for-minecraft.data-packs": {
     "message": "paket data"

@@ -49,7 +49,7 @@
       />
     </Categories>
     <div class="stats">
-      <div v-if="downloads" class="stat">
+      <div v-if="showDownloads && downloads" class="stat">
         <DownloadIcon aria-hidden="true" />
         <p>
           <strong>{{ formatNumber(downloads) }}</strong
@@ -83,18 +83,13 @@
 </template>
 
 <script setup>
-import {
-  CalendarIcon,
-  DownloadIcon,
-  EditIcon,
-  HeartIcon,
-} from '@modrinth/assets'
-import { formatNumber } from '@modrinth/utils'
+import {CalendarIcon, DownloadIcon, EditIcon, HeartIcon,} from '@modrinth/assets'
+import {formatNumber} from '@modrinth/utils'
 import dayjs from 'dayjs'
 import relativeTime from 'dayjs/plugin/relativeTime.js'
-import { computed } from 'vue'
+import {computed} from 'vue'
 
-import { useRelativeTime } from '../../composables'
+import {useRelativeTime} from '../../composables'
 import Categories from '../search/Categories.vue'
 import Avatar from './Avatar.vue'
 import EnvironmentIndicator from './EnvironmentIndicator.vue'
@@ -131,6 +126,11 @@ const props = defineProps({
   downloads: {
     type: String,
     default: null,
+    required: false,
+  },
+  showDownloads: {
+    type: Boolean,
+    default: true,
     required: false,
   },
   follows: {

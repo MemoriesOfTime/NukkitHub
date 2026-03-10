@@ -65,6 +65,7 @@
         Published
       </div>
       <div
+        v-if="showDownloads"
         class="text-sm font-bold text-contrast max-sm:hidden sm:max-xl:collapse sm:max-xl:hidden"
       >
         Downloads
@@ -146,6 +147,7 @@
                 {{ formatRelativeTime(new Date(version.published_at)) }}
               </div>
               <div
+                v-if="showDownloads"
                 class="pointer-events-none z-[1] flex items-center gap-1 font-medium xl:self-center"
               >
                 <DownloadIcon class="xl:hidden" />
@@ -183,26 +185,17 @@
   </div>
 </template>
 <script setup lang="ts">
-import {
-  CalendarIcon,
-  DownloadIcon,
-  PlusIcon,
-  StarIcon,
-} from '@modrinth/assets'
-import { ButtonStyled } from '@modrinth/ui'
-import { formatBytes, formatNumber, type Version } from '@modrinth/utils'
-import { computed, type Ref, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import {CalendarIcon, DownloadIcon, PlusIcon, StarIcon,} from '@modrinth/assets'
+import {ButtonStyled} from '@modrinth/ui'
+import {formatBytes, formatNumber, type Version} from '@modrinth/utils'
+import {computed, type Ref, ref} from 'vue'
+import {useRoute, useRouter} from 'vue-router'
 
-import { useRelativeTime } from '../../composables'
-import { useVIntl } from '../../composables/i18n'
-import { commonMessages } from '../../utils/common-messages'
+import {useRelativeTime} from '../../composables'
+import {useVIntl} from '../../composables/i18n'
+import {commonMessages} from '../../utils/common-messages'
 import AutoLink from '../base/AutoLink.vue'
-import {
-  Pagination,
-  VersionChannelIndicator,
-  VersionFilterControl,
-} from '../index'
+import {Pagination, VersionChannelIndicator, VersionFilterControl,} from '../index'
 
 const { formatMessage } = useVIntl()
 const formatRelativeTime = useRelativeTime()
@@ -217,6 +210,7 @@ const props = withDefaults(
     }
     versions: Version[]
     showFiles?: boolean
+    showDownloads?: boolean
     currentMember?: boolean
     versionLink?: (version: Version) => string
     openModal?: () => void
@@ -226,6 +220,7 @@ const props = withDefaults(
   {
     baseId: undefined,
     showFiles: false,
+    showDownloads: true,
     currentMember: false,
     versionLink: undefined,
     hasMultipleEnvironments: false,

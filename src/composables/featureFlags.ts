@@ -1,4 +1,4 @@
-import type { CookieOptions } from '#app'
+import type {CookieOptions} from '#app'
 
 export type ProjectDisplayMode = 'list' | 'grid' | 'gallery'
 export type DarkColorTheme = 'dark' | 'oled' | 'retro'
@@ -38,6 +38,7 @@ export const DEFAULT_FEATURE_FLAGS = validateValues({
   showProjectPageDownloadModalServersPromo: false,
   showProjectPageCreateServersTooltip: true,
   showProjectPageQuickServerButton: false,
+  showDownloadCounts: true,
   newProjectGeneralSettings: false,
   newProjectEnvironmentSettings: true,
   hideRussiaCensorshipBanner: false,

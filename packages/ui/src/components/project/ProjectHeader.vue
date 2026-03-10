@@ -17,6 +17,7 @@
     </template>
     <template #stats>
       <div
+        v-if="showDownloads"
         v-tooltip="
           `${formatNumber(project.downloads, false)} download${project.downloads !== 1 ? 's' : ''}`
         "
@@ -64,9 +65,9 @@
   </ContentPageHeader>
 </template>
 <script setup lang="ts">
-import { DownloadIcon, HeartIcon, TagsIcon } from '@modrinth/assets'
-import { formatCategory, formatNumber, type Project } from '@modrinth/utils'
-import { useRouter } from 'vue-router'
+import {DownloadIcon, HeartIcon, TagsIcon} from '@modrinth/assets'
+import {formatCategory, formatNumber, type Project} from '@modrinth/utils'
+import {useRouter} from 'vue-router'
 
 import Avatar from '../base/Avatar.vue'
 import ContentPageHeader from '../base/ContentPageHeader.vue'
@@ -79,9 +80,11 @@ withDefaults(
   defineProps<{
     project: Project
     member?: boolean
+    showDownloads?: boolean
   }>(),
   {
     member: false,
+    showDownloads: true,
   },
 )
 </script>

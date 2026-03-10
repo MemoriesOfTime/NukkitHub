@@ -1182,7 +1182,7 @@
     "message": "Hanapin ang guato mo, mabilisan at madalian"
   },
   "landing.heading.the-place-for-minecraft": {
-    "message": "Ang lugar para sa Allay na {content}"
+    "message": "Ang lugar para sa {server} na {content}"
   },
   "landing.heading.the-place-for-minecraft.data-packs": {
     "message": "mga data pack"

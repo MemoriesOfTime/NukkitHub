@@ -202,27 +202,15 @@
 </template>
 
 <script setup lang="ts">
-import {
-  CodeIcon,
-  RadioButtonCheckedIcon,
-  RadioButtonIcon,
-} from '@modrinth/assets'
-import {
-  Button,
-  defineMessages,
-  IntlFormatted,
-  normalizeChildren,
-  ThemeSelector,
-  useVIntl,
-} from '@modrinth/ui'
-import { formatProjectType } from '@modrinth/utils'
+import {CodeIcon, RadioButtonCheckedIcon, RadioButtonIcon,} from '@modrinth/assets'
+import {Button, defineMessages, IntlFormatted, normalizeChildren, ThemeSelector, useVIntl,} from '@modrinth/ui'
 
 import MessageBanner from '~/components/ui/MessageBanner.vue'
-import type { DisplayLocation } from '~/plugins/cosmetics'
-import { isDarkTheme, type Theme } from '~/plugins/theme/index.ts'
+import type {DisplayLocation} from '~/plugins/cosmetics'
+import {isDarkTheme, type Theme} from '~/plugins/theme/index.ts'
 
 useHead({
-  title: 'Display settings - AllayHub',
+  title: 'Display settings - NukkitHub',
 })
 
 const { formatMessage } = useVIntl()
@@ -231,7 +219,7 @@ const developerModeBanner = defineMessages({
   description: {
     id: 'settings.display.banner.developer-mode.description',
     defaultMessage:
-      "<strong>Developer mode</strong> is active. This will allow you to view the internal IDs of various things throughout AllayHub that may be helpful if you're a developer. Click on the logo at the bottom of the page 5 times to toggle developer mode.",
+      "<strong>Developer mode</strong> is active. This will allow you to view the internal IDs of various things throughout NukkitHub that may be helpful if you're a developer. Click on the logo at the bottom of the page 5 times to toggle developer mode.",
   },
   deactivate: {
     id: 'settings.display.banner.developer-mode.button',
@@ -247,7 +235,7 @@ const colorTheme = defineMessages({
   description: {
     id: 'settings.display.theme.description',
     defaultMessage:
-      'Select your preferred color theme for AllayHub on this device.',
+      'Select your preferred color theme for NukkitHub on this device.',
   },
 })
 

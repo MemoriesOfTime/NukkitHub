@@ -1143,7 +1143,7 @@
     "message": "چاري اڤ يڠ اندا ماهو⹁ دڠن چڤت دان موده"
   },
   "landing.heading.the-place-for-minecraft": {
-    "message": "تمڤت اونتوق {content} Allay"
+    "message": "تمڤت اونتوق {content} {server}"
   },
   "landing.heading.the-place-for-minecraft.data-packs": {
     "message": "ڤيک داتا"

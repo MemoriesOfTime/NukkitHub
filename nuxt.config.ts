@@ -1,23 +1,26 @@
+import { existsSync, readdirSync } from 'node:fs'
+import { join, relative, sep } from 'node:path'
 import { LOCALES } from '@modrinth/ui/src/composables/i18n.ts'
 import serverSidedVue from '@vitejs/plugin-vue'
 import { defineNuxtConfig } from 'nuxt/config'
 import svgLoader from 'vite-svg-loader'
 
 const favicons = {
-  '(prefers-color-scheme:no-preference)': '/favicon.ico',
-  '(prefers-color-scheme:light)': '/favicon.ico',
-  '(prefers-color-scheme:dark)': '/favicon.ico',
+  '(prefers-color-scheme:no-preference)': '/favicon.png',
+  '(prefers-color-scheme:light)': '/favicon.png',
+  '(prefers-color-scheme:dark)': '/favicon.png',
 }
 
 export default defineNuxtConfig({
   srcDir: 'src/',
+  spaLoadingTemplate: true,
   app: {
     baseURL: '/',
     head: {
       htmlAttrs: {
         lang: 'en',
       },
-      title: 'AllayHub',
+      title: 'NukkitHub',
       script: [
         {
           innerHTML: `(function(){var w=console.warn,e=console.error;console.warn=function(){if(arguments[0]&&arguments[0].includes&&arguments[0].includes('Hydration'))return;w.apply(console,arguments)};console.error=function(){if(arguments[0]&&arguments[0].includes&&arguments[0].includes('Hydration'))return;e.apply(console,arguments)}})()`,
@@ -25,27 +28,32 @@ export default defineNuxtConfig({
       ],
       link: [
         ...Object.entries(favicons).map(([media, href]): object => {
-          return { rel: 'icon', type: 'image/x-icon', href, media }
+          return { rel: 'icon', type: 'image/png', href, media }
         }),
         ...Object.entries(favicons).map(([media, href]): object => {
           return {
             rel: 'apple-touch-icon',
-            type: 'image/x-icon',
+            type: 'image/png',
             href,
             media,
-            sizes: '64x64',
+            sizes: '256x256',
           }
         }),
         {
           rel: 'search',
           type: 'application/opensearchdescription+xml',
           href: '/opensearch.xml',
-          title: 'AllayHub plugins',
+          title: 'NukkitHub plugins',
         },
       ],
     },
   },
   vite: {
+    server: {
+      fs: {
+        allow: ['..'],
+      },
+    },
     css: {
       preprocessorOptions: {
         scss: {
@@ -91,7 +99,10 @@ export default defineNuxtConfig({
         output: {
           manualChunks(id) {
             if (id.includes('node_modules')) {
-              if (id.includes('intl-messageformat') || id.includes('@formatjs')) {
+              if (
+                id.includes('intl-messageformat') ||
+                id.includes('@formatjs')
+              ) {
                 return 'vendor-i18n'
               }
               if (id.includes('highlight.js')) {
@@ -111,12 +122,6 @@ export default defineNuxtConfig({
         },
       },
     },
-    server: {
-      fs: {
-        // Allow access to test directory for mock data
-        allow: ['..'],
-      },
-    },
   },
   // SSG mode configuration
   nitro: {
@@ -125,9 +130,9 @@ export default defineNuxtConfig({
     // Prerender configuration
     prerender: {
       // Crawl all links from starting routes
-      crawlLinks: true,
+      crawlLinks: false,
       // Starting routes for crawling
-      routes: ['/'],
+      routes: getPrerenderRoutes(),
       // Ignore routes that intentionally throw 404
       ignore: ['/discover'],
       // Ignore errors for dynamic routes that can't be pre-rendered
@@ -154,8 +159,8 @@ export default defineNuxtConfig({
       production: isProduction(),
       featureFlagOverrides: getFeatureFlagOverrides(),
 
-      owner: process.env.VERCEL_GIT_REPO_OWNER || 'AllayMC',
-      slug: process.env.VERCEL_GIT_REPO_SLUG || 'AllayHub',
+      owner: process.env.VERCEL_GIT_REPO_OWNER || 'MemoriesOfTime',
+      slug: process.env.VERCEL_GIT_REPO_SLUG || 'NukkitHub',
       branch:
         process.env.VERCEL_GIT_COMMIT_REF ||
         process.env.CF_PAGES_BRANCH ||
@@ -203,7 +208,7 @@ export default defineNuxtConfig({
     langDir: '.',
     locales: LOCALES.map((locale) => ({
       ...locale,
-      file: 'locale-loader.ts',
+      file: 'locale-loader.js',
     })),
     strategy: 'no_prefix',
     detectBrowserLanguage: {
@@ -211,7 +216,7 @@ export default defineNuxtConfig({
       cookieKey: 'locale',
       fallbackLocale: 'en-US',
     },
-    vueI18n: './i18n.config.ts',
+    vueI18n: './i18n.config.js',
     bundle: {
       optimizeTranslationDirective: false,
     },
@@ -235,7 +240,7 @@ export default defineNuxtConfig({
     },
   },
   compatibilityDate: '2025-01-01',
-  telemetry: false,
+  telemetry: false
 })
 
 function isProduction() {
@@ -251,5 +256,56 @@ function getDomain() {
     const port = process.env.PORT || 3000
     return `http://localhost:${port}`
   }
-  return 'https://hub.allaymc.org'
+  return 'https://plugins.nukkit-mot.com'
+}
+
+function getPrerenderRoutes() {
+  const routes = new Set<string>([
+    '/',
+    '/plugins',
+    '/discover/plugins',
+    '/flags',
+    '/settings',
+    '/settings/language',
+    '/indexing-guide',
+  ])
+  const indexDir = 'NukkitHubIndex'
+
+  if (!existsSync(indexDir)) {
+    return [...routes]
+  }
+
+  const stack = [indexDir]
+
+  while (stack.length > 0) {
+    const currentDir = stack.pop()
+    if (!currentDir) continue
+
+    for (const entry of readdirSync(currentDir, { withFileTypes: true })) {
+      const fullPath = join(currentDir, entry.name)
+
+      if (entry.isDirectory()) {
+        stack.push(fullPath)
+        continue
+      }
+
+      if (!entry.isFile() || !entry.name.endsWith('.json')) {
+        continue
+      }
+
+      const routePath = relative(indexDir, fullPath)
+        .split(sep)
+        .join('/')
+        .replace(/\.json$/, '')
+      const [owner, ...repoParts] = routePath.split('/')
+
+      if (!owner || repoParts.length === 0) {
+        continue
+      }
+
+      routes.add(`/plugin/${owner}/${repoParts.join('/')}`)
+    }
+  }
+
+  return [...routes].sort()
 }

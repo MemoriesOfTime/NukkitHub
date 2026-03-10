@@ -15,6 +15,8 @@ declare namespace AllayIndex {
 
     // Categories
     categories: string[] // Category IDs, e.g. ["utility", "economy"]
+    targets: string[] // Runtime targets, e.g. ["nkx", "pnx"]
+    primary_target?: string // Primary runtime target for display
 
     // Allay compatibility (for filtering)
     api_version: string // API version requirement, e.g. ">=0.16.0"
@@ -60,6 +62,11 @@ declare namespace AllayIndex {
 
     versions: RawVersion[]
 
+    targets: string[] // Runtime targets detected from manifests/build files
+    primary_target?: string // Primary runtime target for display/filtering
+    manifest_path?: string // Primary manifest used to build this entry
+    detection_confidence?: 'low' | 'medium' | 'high'
+
     api_version: string // Current API version from main branch
     server_version?: string // Server API version if used
     dependencies?: Dependency[] // Dependencies from main branch
@@ -104,7 +111,7 @@ declare namespace AllayIndex {
   interface IndexMeta {
     updated_at: string // ISO 8601, last index update time
     index_version: string // Schema version, e.g. "1.0"
-    generator?: string // Indexer version, e.g. "allayhub-indexer/0.1.0"
+    generator?: string // Indexer version, e.g. "nukkitindexer/0.1.0"
   }
 
   interface CategoriesFile {
@@ -146,6 +153,8 @@ declare namespace AllayIndex {
     downloads: number
     followers: number
     categories: string[]
+    targets?: string[]
+    primary_target?: string
     game_versions: string[]
     loaders: string[]
     gallery: GalleryImage[]

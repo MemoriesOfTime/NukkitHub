@@ -396,7 +396,7 @@
     "message": "Ang bukas nga tinubdan nga API sa AllayHub nagtugot sa mga tiglunsad nga makadugang sa lawom nga panagsama sa AllayHub. Mahimo nimong magamit ang AllayHub pinaagi sa <link>among aplikasyon</link> ug sa pipila nga labing inila nga mga tiglunsad sama sa ATLauncher, MultiMC, ug Prism Launcher."
   },
   "landing.heading.the-place-for-minecraft": {
-    "message": "Dapit alang sa Allay nga {content}"
+    "message": "Dapit alang sa {server} nga {content}"
   },
   "landing.heading.the-place-for-minecraft.data-packs": {
     "message": "mga putos sa kalap"

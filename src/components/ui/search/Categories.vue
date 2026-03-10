@@ -10,8 +10,8 @@
 </template>
 
 <script>
-import { formatCategory } from '@modrinth/utils'
-import { useCategories } from '~/composables/usePlugins'
+import {formatCategory} from '@modrinth/utils'
+import {useCategories} from '~/composables/useProjectTaxonomy'
 
 export default {
   props: {

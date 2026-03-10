@@ -621,7 +621,7 @@
     "message": "Findz wut u want, fast n ez"
   },
   "landing.heading.the-place-for-minecraft": {
-    "message": "Da spot for Awway {content}"
+    "message": "Da spot for {server} {content}"
   },
   "landing.heading.the-place-for-minecraft.data-packs": {
     "message": "nerdy Packz"

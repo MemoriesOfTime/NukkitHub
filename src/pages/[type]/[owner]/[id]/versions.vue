@@ -5,6 +5,7 @@
       :project="project"
       :versions="versions as never"
       :show-files="flags.showVersionFilesInTable"
+      :show-downloads="flags.showDownloadCounts"
       :current-member="false"
       :game-versions="gameVersions"
       :base-id="baseDropdownId"
@@ -95,15 +96,9 @@
 </template>
 
 <script setup lang="ts">
-import {
-  ClipboardCopyIcon,
-  DownloadIcon,
-  ExternalIcon,
-  LinkIcon,
-  MoreVerticalIcon,
-} from '@modrinth/assets'
-import { ButtonStyled, OverflowMenu, ProjectPageVersions } from '@modrinth/ui'
-import { API_VERSIONS } from '~/types/allayhub'
+import {ClipboardCopyIcon, DownloadIcon, ExternalIcon, LinkIcon, MoreVerticalIcon,} from '@modrinth/assets'
+import {ButtonStyled, OverflowMenu, ProjectPageVersions} from '@modrinth/ui'
+import {API_VERSIONS} from '~/types/allayhub'
 
 const props = defineProps<{
   project: AllayIndex.ProjectView

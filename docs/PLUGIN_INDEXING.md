@@ -1,273 +1,284 @@
 # Plugin Indexing Guide
 
-This document describes how AllayHub indexes plugins from GitHub repositories. Follow these guidelines to ensure your plugin is properly discovered and displayed.
+This guide is written for plugin developers. If you want your project to appear on NukkitHub, follow the checklist below.
 
-## Discovery Requirements
+## Quick Inclusion Checklist
 
-For your repository to be indexed as an Allay plugin, it must meet **all** of the following criteria:
+To get your plugin included, make sure your repository satisfies all of the following:
 
-1. **Public GitHub repository** - Private repositories are not indexed
-2. **Not archived** - Archived repositories are excluded
-3. **Not a template** - Template repositories are excluded
-4. **Not a `noindex` topic** - Repositories with the `noindex` topic are excluded (see [Plugin Removal](#plugin-removal))
-5. **Discoverable** - At least one of:
-   - Contains `org.allaymc` in `build.gradle` or `build.gradle.kts`
-   - Has the `allaymc-plugin` topic on the repository
+1. **Use a public GitHub repository**
+2. **Do not archive the repository**
+3. **Do not mark it as a template**
+4. **Do not add the `noindex` topic**
+5. **Put your manifest in the standard path**
+   - `src/main/resources/plugin.yml`
+   - or `src/main/resources/powernukkitx.yml` for PowerNukkitX-first modules
+6. **Add the topic that matches your target runtime**
+7. **Fill in `plugin.yml` / `powernukkitx.yml` and README.md**
 
-## Discovery Methods
+If you only do one extra thing beyond the manifest, add the correct topic. That makes discovery much more reliable.
 
-AllayHub uses two complementary methods to discover plugins:
+## Which Topic Should You Add?
 
-### 1. Code Search
+Use the topic that best matches your plugin:
 
-Searches for repositories containing `org.allaymc` in Gradle build files. This is the primary discovery method.
+| Target runtime | Recommended topic                     |
+| -------------- | ------------------------------------- |
+| NukkitX        | `nukkit-plugin`                       |
+| Nukkit-MOT     | `nukkit-mot-plugin`                   |
+| PowerNukkitX   | `powernukkitx-plugin` or `pnx-plugin` |
+| Lumi           | `lumi-plugin`                         |
 
-> **Note:** GitHub's code search index may have delays or gaps, especially for:
-> - Newly created repositories
-> - Repositories with low activity
-> - Repositories generated from templates
+If your plugin supports both NukkitX and Nukkit-MOT, `nukkit-plugin` is acceptable.
 
-### 2. Topic Search (Recommended)
+**How to add a topic:** GitHub repository -> About -> gear icon -> Topics.
 
-Searches for repositories with the `allaymc-plugin` topic. This method is more reliable because:
+> **Fork note:** If your plugin repository is a fork, adding the correct topic is especially important.
 
-- Repository metadata is indexed faster than code content
-- Works even if the code search index hasn't caught up
-- Explicitly signals that the repository is an Allay plugin
+## What To Do For Each Runtime
 
-**To add the topic:** Go to your repository → About (gear icon) → Topics → Add `allaymc-plugin`
+### NukkitX (`nkx`)
 
-> **Note:** Forked repositories are indexed only when discovered via the topic search method. If your plugin is a fork, add the `allaymc-plugin` topic to ensure it is discovered.
+Recommended setup:
 
-## Plugin ID Format
+- Use `src/main/resources/plugin.yml`
+- Add the `nukkit-plugin` topic
+- Reference NukkitX-related repositories or dependencies such as:
+  - `cloudburstmc`
+  - `opencollab.dev`
+  - `repo.nukkitx.com`
 
-Each plugin is assigned an ID in the `owner/name` format (all lowercase), where:
+If your plugin uses generic `cn.nukkit:*` dependencies, it may be treated as shared compatibility for both NukkitX and Nukkit-MOT.
 
-- `owner` is the GitHub repository owner (user or organization)
-- `name` is the plugin name (from AllayGradle DSL, `plugin.json`, or repository name as fallback)
+### Nukkit-MOT (`nkmot`)
 
-For example, a plugin named "MyPlugin" in a repository owned by "CoolLoong" would have the ID `coolloong/myplugin`.
+Recommended setup:
 
-Plugin data files are stored in a nested directory structure: `AllayHubIndex/{owner}/{name}.json`.
+- Use `src/main/resources/plugin.yml`
+- Add the `nukkit-mot-plugin` topic
+- Reference Nukkit-MOT-related names in your build files, such as:
+  - `memoriesoftime`
+  - `nukkit-mot`
 
-Frontend URLs follow the same pattern: `/plugin/{owner}/{name}`.
+If your plugin supports both NukkitX and Nukkit-MOT, generic `cn.nukkit:*` dependencies are acceptable.
 
-## Plugin Metadata
+> **Important:** MOTCI is not a repository submission channel. Your plugin still needs to be discoverable from GitHub.
 
-### AllayGradle DSL (Recommended)
+### PowerNukkitX (`pnx`)
 
-Define plugin metadata directly in `build.gradle.kts` using [AllayGradle](https://github.com/AllayMC/AllayGradle):
+Recommended setup:
 
-```kotlin
-allay {
-    api = "0.23.0"
-    plugin {
-        entrance = "com.example.MyPlugin"
-        name = "My Plugin"
-        version = "1.0.0"
-        description = "A short description of my plugin"
-        authors += "AuthorName"
-        website = "https://example.com"
-        apiVersion = ">=0.23.0"
-        dependencies += dependency("OtherPlugin", "1.0.0")
-        dependencies += dependency("OptionalPlugin", optional = true)
-    }
-}
+- Prefer `src/main/resources/powernukkitx.yml`
+- Add `powernukkitx-plugin` or `pnx-plugin`
+- Reference PowerNukkitX-related dependencies, such as:
+  - `cn.powernukkitx`
+  - `powernukkitx`
+
+Using `powernukkitx.yml` is the clearest way to make a PowerNukkitX module indexable.
+
+### Lumi (`lumi`)
+
+Recommended setup:
+
+- Use `src/main/resources/plugin.yml`
+- Add the `lumi-plugin` topic
+- Reference Lumi in Gradle or Maven, such as:
+  - `repo.luminiadev.com`
+  - `com.koshakmine:lumi`
+  - Maven coordinates containing `com.koshakmine` and `lumi`
+
+## Manifest Requirements
+
+At least one supported manifest must exist in the standard path:
+
+- `src/main/resources/plugin.yml`
+- `src/main/resources/powernukkitx.yml`
+
+Example:
+
+```yaml
+name: MyNukkitPlugin
+version: 1.0.0
+main: com.example.MyNukkitPlugin
+api: ['1.0.0']
+authors: ['AuthorName']
+description: A short description of my plugin
+website: https://example.com
+depend: []
+softdepend: []
 ```
 
-### plugin.json / extension.json (Alternative)
+### Required Metadata
 
-Alternatively, the indexer reads metadata from `plugin.json` or `extension.json` in the resources directory:
+| Field         | Required | Description              |
+| ------------- | -------- | ------------------------ |
+| `name`        | Yes      | Plugin name              |
+| `version`     | Yes      | Plugin version           |
+| `main`        | Yes      | Main class path          |
+| `api`         | Yes      | Supported API version(s) |
+| `authors`     | No       | Author list              |
+| `description` | No       | Short summary            |
+| `website`     | No       | Homepage URL             |
+| `depend`      | No       | Required dependencies    |
+| `softdepend`  | No       | Optional dependencies    |
 
-- Root module: `src/main/resources/plugin.json`
-- Submodule: `<module>/src/main/resources/plugin.json`
+## Multi-Module Repositories
 
-```json
-{
-  "entrance": "com.example.MyPlugin",
-  "name": "My Plugin",
-  "version": "1.0.0",
-  "authors": ["AuthorName"],
-  "description": "A short description of my plugin",
-  "website": "https://example.com",
-  "api_version": ">=0.14.0",
-  "dependencies": [
-    {
-      "name": "OtherPlugin",
-      "version": "1.0.0",
-      "optional": false
-    }
-  ]
-}
-```
+If your repository contains multiple plugin modules:
 
-#### Template Variables
+- each module should have its own manifest in `src/main/resources/`
+- each module is indexed separately
+- the generated IDs will look like `owner/repo--module-suffix`
 
-You can use template variables in `plugin.json`:
+Examples:
 
-| Variable | Description |
-|----------|-------------|
-| `${project.version}` | Replaced with version from `build.gradle.kts` |
-| `${description}` | Replaced with description from `build.gradle.kts` |
-| `${project.description}` | Same as `${description}` |
-| `@DESCRIPTION@` | Same as `${description}` |
+- Single-module repository: `cooldev/myplugin-repo`
+- Multi-module repository: `cooldev/myplugin-repo--modules-economy`
 
-### Fallback Values
+## Versions And Downloads
 
-| Field | Fallback Source |
-|-------|-----------------|
-| `name` | Repository name |
-| `description` | Repository description |
-| `icon_url` | Repository owner's avatar |
+Your repository can be indexed without a GitHub Release.
 
-## Icon / Logo
+However, if you want users to see downloadable versions on NukkitHub, publish releases this way:
 
-Place a logo file **anywhere in the repository** to use as your plugin icon. The indexer searches for these filenames in order (matches `**/filename`):
+1. Create a GitHub Release
+2. Attach one or more `.jar` files
+3. Use the release title and body as your version title and changelog
 
-1. `logo.png`
-2. `icon.png`
-3. `logo.jpg`
-4. `icon.jpg`
-5. `logo.svg`
-6. `icon.svg`
-7. `logo.webp`
-8. `icon.webp`
-
-If no logo is found, the repository owner's GitHub avatar is used.
-
-## Gallery Images
-
-### From Repository
-
-Place numbered gallery images **anywhere in the repository** (matches `**/galleryN.ext`):
-
-```
-gallery1.png
-gallery2.jpg
-gallery3.webp
-...
-gallery10.png
-```
-
-Supported extensions: `png`, `jpg`, `jpeg`, `svg`, `webp`, `gif`
-
-The indexer reads gallery images sequentially (`gallery1`, `gallery2`, ...) and stops at the first missing number.
-
-### From README
-
-Images in your README are automatically extracted and added to the gallery after the numbered gallery images.
-
-### Display Priority
-
-Gallery images are ordered as follows (first image is used as the cover on discover page):
-
-1. Numbered gallery images (`gallery1`, `gallery2`, ...)
-2. README images (in order of appearance, deduplicated by URL)
+Only **GitHub Releases** are indexed as plugin versions.
 
 ## Categories
 
-Categories are derived from your repository's **GitHub Topics**. Add topics that match the following category IDs:
+Add category topics to help users find your plugin:
 
-| Category ID | Description |
-|-------------|-------------|
-| `adventure` | Adventure and exploration plugins |
-| `cursed` | Cursed and challenge plugins |
-| `decoration` | Decoration and building plugins |
-| `economy` | Economy and trading plugins |
-| `equipment` | Equipment and gear plugins |
-| `food` | Food and farming plugins |
-| `game-mechanics` | Game mechanics modification plugins |
-| `library` | API libraries for developers |
-| `magic` | Magic and spells plugins |
-| `management` | Server management plugins |
-| `minigame` | Minigame plugins |
-| `mobs` | Mob related plugins |
-| `optimization` | Performance optimization plugins |
-| `social` | Social and communication plugins |
-| `storage` | Storage and inventory plugins |
-| `technology` | Technology and automation plugins |
-| `transportation` | Transportation plugins |
-| `utility` | General utility plugins |
-| `world-generation` | World generation plugins |
+| Category         | Topic                     |
+| ---------------- | ------------------------- |
+| Adventure        | `nukkit-adventure`        |
+| Cursed           | `nukkit-cursed`           |
+| Decoration       | `nukkit-decoration`       |
+| Economy          | `nukkit-economy`          |
+| Equipment        | `nukkit-equipment`        |
+| Food             | `nukkit-food`             |
+| Game Mechanics   | `nukkit-game-mechanics`   |
+| Library          | `nukkit-library`          |
+| Magic            | `nukkit-magic`            |
+| Management       | `nukkit-management`       |
+| Minigame         | `nukkit-minigame`         |
+| Mobs             | `nukkit-mobs`             |
+| Optimization     | `nukkit-optimization`     |
+| Social           | `nukkit-social`           |
+| Storage          | `nukkit-storage`          |
+| Technology       | `nukkit-technology`       |
+| Transportation   | `nukkit-transportation`   |
+| Utility          | `nukkit-utility`          |
+| World Generation | `nukkit-world-generation` |
 
-Topics not matching these IDs are ignored. If no matching topics are found, the plugin defaults to `utility`.
+## README, Icon, And Gallery
 
-## Releases / Versions
+To make your listing look complete after inclusion:
 
-Versions are read from GitHub Releases:
+### README
 
-- Draft releases are ignored
-- Each release becomes a version entry
-- Version number is extracted from the tag name (leading `v` is stripped)
-- Release body becomes the changelog
-- Files with `.jar` or `.zip` extensions are listed as downloadable files
-- Download counts are tracked per release
+Your `README.md` becomes the main long description.
 
-### Primary File Detection
+Recommended:
 
-Among release assets, the indexer selects a primary file:
-1. First file containing "allay" in the filename
-2. Otherwise, the first `.jar` or `.zip` file
+- explain what the plugin does
+- show usage screenshots
+- include installation steps
+- keep links valid and public
 
-## Authors
+### Icon
 
-Authors are populated from:
+To add a custom icon:
 
-1. **Repository owner** - Always listed as first author
-2. **Plugin authors** - Additional authors from AllayGradle DSL or `plugin.json`, matched against repository contributors
+1. place `logo.png` or `icon.png` in `.github/img/` or the repository root
+2. use PNG format
+3. recommended size: `256x256`
+
+If no icon is found, the repository owner's avatar is used.
+
+### Gallery Images
+
+To add screenshots:
+
+1. place PNG files in `.github/img/`
+2. do not use `logo.png` or `icon.png` for screenshots
+3. additional README images may also be picked up as gallery content
 
 ## License
 
-License information is read from GitHub's detected license:
+Add a standard license file if possible.
 
-- SPDX ID is used as the license identifier
-- If no license is detected, defaults to "ARR" (All Rights Reserved)
+NukkitHub will try to read license information from:
 
-## API Version
+1. GitHub's license detection
+2. a `LICENSE` file in the repository root
 
-The API version requirement is extracted from:
+If no open-source license is found, the project may appear as All Rights Reserved.
 
-1. `apiVersion` in AllayGradle DSL or `api_version` in `plugin.json`
-2. `api` in AllayGradle DSL
-3. Version catalog references (resolved from `libs.versions.toml`)
+## When A Plugin Will Not Be Indexed
+
+Your plugin may be skipped or removed if any of the following is true:
+
+| Situation                                                                  | Result                   |
+| -------------------------------------------------------------------------- | ------------------------ |
+| Repository is private                                                      | Not indexed              |
+| Repository is archived                                                     | Removed or skipped       |
+| Repository is a template                                                   | Skipped                  |
+| Repository has `noindex` topic                                             | Skipped or removed       |
+| No supported manifest exists in `src/main/resources/`                      | Not discovered correctly |
+| The runtime is unclear and there is no matching topic or dependency signal | Module may be skipped    |
+
+To remove your plugin manually, add the `noindex` topic.
+
+## Tips To Get Indexed Faster
+
+1. Add the correct runtime topic immediately
+2. Put the manifest in `src/main/resources/` from the start
+3. Fill in `name`, `version`, `main`, and `api`
+4. Keep README and repository metadata public
+5. Publish a GitHub Release if you want downloadable versions visible
+6. Add category topics, icon, and screenshots after the plugin is indexed
 
 ## Example Repository Structure
 
-```
-my-allay-plugin/
+```text
+my-nukkit-plugin/
 ├── .github/
 │   └── img/
-│       ├── logo.png            # Plugin icon
-│       ├── gallery1.png        # Gallery image 1
-│       └── gallery2.png        # Gallery image 2
-├── build.gradle.kts            # Plugin metadata (AllayGradle DSL)
-├── settings.gradle.kts
-├── README.md                   # Description (images extracted to gallery)
-└── src/
-    └── main/
-        ├── java/             # Plugin source code
-        └── resources/
+│       ├── logo.png
+│       ├── gallery1.png
+│       └── gallery2.png
+├── src/
+│   └── main/
+│       ├── java/
+│       │   └── com/example/
+│       │       └── MyPlugin.java
+│       └── resources/
+│           └── plugin.yml
+├── README.md
+└── LICENSE
 ```
 
-## Plugin Removal
+## Troubleshooting
 
-Plugins are automatically removed from the index when any of the following conditions are met during the update cycle (runs hourly):
+### My plugin is not showing up
 
-| Condition | Description |
-|-----------|-------------|
-| Repository deleted | The repository no longer exists (404) |
-| Repository archived | The repository has been archived |
-| Plugin removed | The `plugin.json` or AllayGradle DSL no longer defines the plugin |
-| Opted out | The repository has the `noindex` topic |
+Check these items in order:
 
-To manually remove your plugin from AllayHub, add the `noindex` topic to your repository (About → Topics → add `noindex`).
+1. repository is public
+2. repository is not archived
+3. repository does not have the `noindex` topic
+4. manifest exists in `src/main/resources/`
+5. the runtime topic is set correctly
+6. build files clearly reference the runtime you are targeting
+7. wait up to 1 hour for the next indexing cycle
 
-## Tips for Better Indexing
+### My project is indexed but has no downloads
 
-1. **Add `allaymc-plugin` topic** - Ensures your plugin is discovered even if code search hasn't indexed it yet
-2. **Use category topics** - Add relevant category topics (see [Categories](#categories)) to your repository
-3. **Write a good README** - The README becomes your plugin's detailed description
-4. **Create releases** - Only released versions appear in the version list
-5. **Add a logo** - A custom logo helps your plugin stand out
-6. **Include gallery images** - Screenshots help users understand your plugin
-7. **Fill out plugin.json** - Complete metadata improves discoverability
+Make sure you created a **GitHub Release** and attached a `.jar` file.
+
+### My runtime is detected incorrectly
+
+Use the topic that matches your runtime and make your build files reference the matching core clearly.

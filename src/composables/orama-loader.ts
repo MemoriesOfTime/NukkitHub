@@ -5,8 +5,8 @@
  * Uses singleton pattern to prevent multiple index loads.
  */
 
-import { search as oramaSearch, type Orama } from '@orama/orama'
-import { restore } from '@orama/plugin-data-persistence'
+import {type Orama, search as oramaSearch} from '@orama/orama'
+import {restore} from '@orama/plugin-data-persistence'
 
 /**
  * Document returned from search
@@ -16,6 +16,8 @@ export interface PluginDocument {
   name: string
   owner: string
   categories: string[]
+  targets: string[]
+  primary_target: string
   license: 'open-source' | 'closed-source'
   api_major: number
   downloads: number
@@ -35,6 +37,8 @@ export type PluginSearchDB = Orama<{
   name: 'string'
   owner: 'string'
   categories: 'enum[]'
+  targets: 'enum[]'
+  primary_target: 'enum'
   license: 'enum'
   api_major: 'number'
   downloads: 'number'
@@ -45,6 +49,7 @@ export type PluginSearchDB = Orama<{
 
 export interface OramaSearchFilters {
   categories?: string[]
+  targets?: string[]
   license?: 'open-source' | 'closed-source'
   apiMajor?: number
 }
@@ -126,6 +131,9 @@ export async function searchPlugins(
   const where: Record<string, any> = {}
   if (filters.categories?.length) {
     where.categories = { containsAny: filters.categories }
+  }
+  if (filters.targets?.length) {
+    where.targets = { containsAny: filters.targets }
   }
   if (filters.license) {
     where.license = { eq: filters.license }

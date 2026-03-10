@@ -1179,7 +1179,7 @@
     "message": "Tìm thứ bạn muốn, nhanh và dễ dàng"
   },
   "landing.heading.the-place-for-minecraft": {
-    "message": "Nơi dành cho {content} Allay"
+    "message": "Nơi dành cho {content} {server}"
   },
   "landing.heading.the-place-for-minecraft.data-packs": {
     "message": "data pack"
@@ -2166,10 +2166,10 @@
     "message": "AllayHub hoàn toàn mã nguồn mở. Gửi plugin qua PR, đóng góp cho nền tảng và giúp phát triển hệ sinh thái AllayMC."
   },
   "layout.footer.allay": {
-    "message": "Allay"
+    "message": "Nukkit-MOT"
   },
   "layout.footer.allay.server": {
-    "message": "Máy chủ Allay"
+    "message": "Nukkit-MOT Server"
   },
   "layout.footer.allay.docs": {
     "message": "Tài liệu"

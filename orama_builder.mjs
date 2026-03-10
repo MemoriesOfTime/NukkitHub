@@ -48,6 +48,8 @@ async function main() {
       name: 'string',
       owner: 'string',
       categories: 'enum[]',
+      targets: 'enum[]',
+      primary_target: 'enum',
       license: 'enum',
       api_major: 'number',
       downloads: 'number',
