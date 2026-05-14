@@ -12,7 +12,7 @@ const MAX_CONCURRENT: usize = 10;
 
 const API_BASE: &str = "https://api.github.com";
 const TOKEN_REFRESH_MARGIN: Duration = Duration::from_secs(3600 - 300);
-const RATE_LIMIT_BUFFER: usize = 5;
+const RATE_LIMIT_BUFFER: usize = 50;
 
 const USER_AGENT: &str = concat!(
     "NukkitIndexer/",
@@ -463,6 +463,16 @@ impl GitHubClient {
 
         match self.request_with_etag::<GitTree>(&url, etag) {
             Ok((data, new_etag)) => {
+                // Do not cache truncated trees — they are incomplete and would cause
+                // false "plugin not found" deletions on subsequent runs when the API
+                // is rate-limited and falls back to this stale cache.
+                if data.truncated {
+                    warn!(
+                        key = %cache_key,
+                        "Tree truncated by GitHub, not caching (would cause incomplete data)"
+                    );
+                    return Ok(data);
+                }
                 let mut cache = self.cache.write().unwrap();
                 cache.trees.insert(
                     cache_key,
@@ -479,6 +489,16 @@ impl GitHubClient {
             }
             Err(e) => {
                 if let Some(entry) = cached {
+                    // Never use a truncated tree from cache — it is incomplete and
+                    // would cause plugins to be falsely marked as deleted.
+                    if entry.data.truncated {
+                        warn!(
+                            key = %cache_key,
+                            error = %e,
+                            "API failed and cached tree is truncated, refusing to use incomplete data"
+                        );
+                        return Err(e);
+                    }
                     warn!(key = %cache_key, error = %e, "API failed, using cached tree");
                     Ok(entry.data)
                 } else {
