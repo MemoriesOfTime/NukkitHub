@@ -12,7 +12,9 @@ const MAX_CONCURRENT: usize = 10;
 
 const API_BASE: &str = "https://api.github.com";
 const TOKEN_REFRESH_MARGIN: Duration = Duration::from_secs(3600 - 300);
-const RATE_LIMIT_BUFFER: usize = 5;
+const CORE_RATE_LIMIT_BUFFER: usize = 50;
+const SEARCH_MIN_INTERVAL: Duration = Duration::from_secs(2);
+const CODE_SEARCH_MIN_INTERVAL: Duration = Duration::from_secs(7);
 
 const USER_AGENT: &str = concat!(
     "NukkitIndexer/",
@@ -23,6 +25,8 @@ const USER_AGENT: &str = concat!(
 struct ResponseCache {
     repositories: HashMap<String, CacheEntry<Repository>>,
     trees: HashMap<String, CacheEntry<GitTree>>,
+    releases: HashMap<String, CacheEntry<Vec<Release>>>,
+    raw_contents: HashMap<String, CacheEntry<String>>,
 }
 
 impl ResponseCache {
@@ -30,6 +34,8 @@ impl ResponseCache {
         Self {
             repositories: cache.repositories,
             trees: cache.trees,
+            releases: cache.releases,
+            raw_contents: cache.raw_contents,
         }
     }
 
@@ -37,6 +43,8 @@ impl ResponseCache {
         DataCache {
             repositories: self.repositories.clone(),
             trees: self.trees.clone(),
+            releases: self.releases.clone(),
+            raw_contents: self.raw_contents.clone(),
         }
     }
 }
@@ -48,62 +56,158 @@ pub enum AuthMethod {
     None,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RateLimitResource {
+    Core,
+    Search,
+    CodeSearch,
+    Graphql,
+    Other,
+}
+
+impl RateLimitResource {
+    fn from_url(url: &str) -> Self {
+        if url.contains("/search/code") {
+            Self::CodeSearch
+        } else if url.contains("/search/") {
+            Self::Search
+        } else if url.contains("/graphql") {
+            Self::Graphql
+        } else {
+            Self::Core
+        }
+    }
+
+    fn from_header(value: Option<&str>, fallback: Self) -> Self {
+        match value {
+            Some("core") => Self::Core,
+            // GitHub may report code search as the search resource. Keep the
+            // endpoint-derived bucket so code search can be throttled separately.
+            Some("search") if fallback == Self::CodeSearch => Self::CodeSearch,
+            Some("search") => Self::Search,
+            Some("code_search") => Self::CodeSearch,
+            Some("graphql") => Self::Graphql,
+            Some(_) => Self::Other,
+            None => fallback,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct RateLimitBucket {
+    remaining: Arc<AtomicUsize>,
+    limit: Arc<AtomicUsize>,
+    reset: Arc<AtomicUsize>,
+}
+
+impl RateLimitBucket {
+    fn new() -> Self {
+        Self {
+            remaining: Arc::new(AtomicUsize::new(usize::MAX)),
+            limit: Arc::new(AtomicUsize::new(0)),
+            reset: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    fn remaining(&self) -> usize {
+        self.remaining.load(Ordering::SeqCst)
+    }
+
+    fn limit(&self) -> usize {
+        self.limit.load(Ordering::SeqCst)
+    }
+}
+
+#[derive(Clone)]
 pub struct RateLimit {
-    remaining: AtomicUsize,
-    limit: AtomicUsize,
-    reset: AtomicUsize,
+    core: RateLimitBucket,
+    search: RateLimitBucket,
+    code_search: RateLimitBucket,
+    graphql: RateLimitBucket,
+    other: RateLimitBucket,
 }
 
 impl RateLimit {
     fn new() -> Self {
         Self {
-            remaining: AtomicUsize::new(usize::MAX),
-            limit: AtomicUsize::new(0),
-            reset: AtomicUsize::new(0),
+            core: RateLimitBucket::new(),
+            search: RateLimitBucket::new(),
+            code_search: RateLimitBucket::new(),
+            graphql: RateLimitBucket::new(),
+            other: RateLimitBucket::new(),
+        }
+    }
+
+    fn bucket(&self, resource: RateLimitResource) -> &RateLimitBucket {
+        match resource {
+            RateLimitResource::Core => &self.core,
+            RateLimitResource::Search => &self.search,
+            RateLimitResource::CodeSearch => &self.code_search,
+            RateLimitResource::Graphql => &self.graphql,
+            RateLimitResource::Other => &self.other,
         }
     }
 
     pub fn remaining(&self) -> usize {
-        self.remaining.load(Ordering::SeqCst)
+        self.core.remaining()
     }
 
     pub fn limit(&self) -> usize {
-        self.limit.load(Ordering::SeqCst)
+        self.core.limit()
+    }
+
+    pub fn search_remaining(&self) -> usize {
+        self.search.remaining()
+    }
+
+    pub fn code_search_remaining(&self) -> usize {
+        self.code_search.remaining()
+    }
+
+    pub fn has_core_remaining(&self) -> bool {
+        self.core.remaining() > CORE_RATE_LIMIT_BUFFER
     }
 
     pub fn has_remaining(&self) -> bool {
-        self.remaining.load(Ordering::SeqCst) > RATE_LIMIT_BUFFER
-    }
-}
-
-impl Clone for RateLimit {
-    fn clone(&self) -> Self {
-        Self {
-            remaining: AtomicUsize::new(self.remaining.load(Ordering::SeqCst)),
-            limit: AtomicUsize::new(self.limit.load(Ordering::SeqCst)),
-            reset: AtomicUsize::new(self.reset.load(Ordering::SeqCst)),
-        }
+        self.has_core_remaining()
     }
 }
 
 pub struct GitHubClient {
     auth: AuthMethod,
-    cached_token: RwLock<Option<(String, Instant)>>,
+    cached_token: Arc<RwLock<Option<(String, Instant)>>>,
     pub rate_limit: RateLimit,
-    api_calls: AtomicUsize,
-    cache_hits: AtomicUsize,
+    api_calls: Arc<AtomicUsize>,
+    cache_hits: Arc<AtomicUsize>,
     cache: Arc<RwLock<ResponseCache>>,
+    search_throttle: Arc<Mutex<SearchThrottle>>,
+}
+
+struct SearchThrottle {
+    search_next_at: Instant,
+    code_search_next_at: Instant,
+}
+
+impl SearchThrottle {
+    fn new() -> Self {
+        let now = Instant::now();
+        Self {
+            search_next_at: now,
+            code_search_next_at: now,
+        }
+    }
 }
 
 impl Clone for GitHubClient {
     fn clone(&self) -> Self {
         Self {
             auth: self.auth.clone(),
-            cached_token: RwLock::new(self.cached_token.read().unwrap().clone()),
+            cached_token: Arc::clone(&self.cached_token),
             rate_limit: self.rate_limit.clone(),
-            api_calls: AtomicUsize::new(self.api_calls.load(Ordering::SeqCst)),
-            cache_hits: AtomicUsize::new(self.cache_hits.load(Ordering::SeqCst)),
+            api_calls: Arc::clone(&self.api_calls),
+            cache_hits: Arc::clone(&self.cache_hits),
             cache: Arc::clone(&self.cache),
+            search_throttle: Arc::clone(&self.search_throttle),
         }
     }
 }
@@ -116,11 +220,12 @@ impl GitHubClient {
     pub fn new_with_cache(token: Option<String>, data_cache: DataCache) -> Self {
         Self {
             auth: token.map(AuthMethod::Token).unwrap_or(AuthMethod::None),
-            cached_token: RwLock::new(None),
+            cached_token: Arc::new(RwLock::new(None)),
             rate_limit: RateLimit::new(),
-            api_calls: AtomicUsize::new(0),
-            cache_hits: AtomicUsize::new(0),
+            api_calls: Arc::new(AtomicUsize::new(0)),
+            cache_hits: Arc::new(AtomicUsize::new(0)),
             cache: Arc::new(RwLock::new(ResponseCache::from_data_cache(data_cache))),
+            search_throttle: Arc::new(Mutex::new(SearchThrottle::new())),
         }
     }
 
@@ -131,11 +236,12 @@ impl GitHubClient {
     pub fn with_app_and_cache(app_auth: GitHubAppAuth, data_cache: DataCache) -> Self {
         Self {
             auth: AuthMethod::App(app_auth),
-            cached_token: RwLock::new(None),
+            cached_token: Arc::new(RwLock::new(None)),
             rate_limit: RateLimit::new(),
-            api_calls: AtomicUsize::new(0),
-            cache_hits: AtomicUsize::new(0),
+            api_calls: Arc::new(AtomicUsize::new(0)),
+            cache_hits: Arc::new(AtomicUsize::new(0)),
             cache: Arc::new(RwLock::new(ResponseCache::from_data_cache(data_cache))),
+            search_throttle: Arc::new(Mutex::new(SearchThrottle::new())),
         }
     }
 
@@ -174,25 +280,42 @@ impl GitHubClient {
 
     fn update_rate_limit_from_headers(
         &self,
+        resource: RateLimitResource,
         remaining: Option<&str>,
         limit: Option<&str>,
         reset: Option<&str>,
     ) {
+        let bucket = self.rate_limit.bucket(resource);
         if let Some(r) = remaining.and_then(|s| s.parse().ok()) {
-            self.rate_limit
-                .remaining
-                .store(r, std::sync::atomic::Ordering::SeqCst);
+            bucket.remaining.store(r, Ordering::SeqCst);
         }
         if let Some(l) = limit.and_then(|s| s.parse().ok()) {
-            self.rate_limit
-                .limit
-                .store(l, std::sync::atomic::Ordering::SeqCst);
+            bucket.limit.store(l, Ordering::SeqCst);
         }
         if let Some(r) = reset.and_then(|s| s.parse().ok()) {
-            self.rate_limit
-                .reset
-                .store(r, std::sync::atomic::Ordering::SeqCst);
+            bucket.reset.store(r, Ordering::SeqCst);
         }
+    }
+
+    fn throttle_search(&self, resource: RateLimitResource) {
+        let interval = match resource {
+            RateLimitResource::Search => SEARCH_MIN_INTERVAL,
+            RateLimitResource::CodeSearch => CODE_SEARCH_MIN_INTERVAL,
+            _ => return,
+        };
+
+        let mut throttle = self.search_throttle.lock().unwrap();
+        let next_at = match resource {
+            RateLimitResource::Search => &mut throttle.search_next_at,
+            RateLimitResource::CodeSearch => &mut throttle.code_search_next_at,
+            _ => return,
+        };
+
+        let now = Instant::now();
+        if *next_at > now {
+            thread::sleep(*next_at - now);
+        }
+        *next_at = Instant::now() + interval;
     }
 
     fn request<T: serde::de::DeserializeOwned>(&self, url: &str) -> Result<T, String> {
@@ -206,6 +329,7 @@ impl GitHubClient {
     ) -> Result<(T, Option<String>), String> {
         let _span = debug_span!("api_request", url = %url).entered();
         let token = self.get_token()?;
+        let fallback_resource = RateLimitResource::from_url(url);
 
         for attempt in 0..3 {
             let mut req = ureq::get(url)
@@ -224,18 +348,45 @@ impl GitHubClient {
             self.api_calls.fetch_add(1, Ordering::SeqCst);
             match req.call() {
                 Ok(resp) if resp.status() == 304 => {
+                    let headers = resp.headers();
+                    let resource = RateLimitResource::from_header(
+                        headers
+                            .get("X-RateLimit-Resource")
+                            .and_then(|h| h.to_str().ok()),
+                        fallback_resource,
+                    );
+                    self.update_rate_limit_from_headers(
+                        resource,
+                        headers
+                            .get("X-RateLimit-Remaining")
+                            .and_then(|h| h.to_str().ok()),
+                        headers
+                            .get("X-RateLimit-Limit")
+                            .and_then(|h| h.to_str().ok()),
+                        headers
+                            .get("X-RateLimit-Reset")
+                            .and_then(|h| h.to_str().ok()),
+                    );
                     self.cache_hits.fetch_add(1, Ordering::SeqCst);
                     return Err("not_modified".to_string());
                 }
                 Ok(mut resp) => {
+                    let headers = resp.headers();
+                    let resource = RateLimitResource::from_header(
+                        headers
+                            .get("X-RateLimit-Resource")
+                            .and_then(|h| h.to_str().ok()),
+                        fallback_resource,
+                    );
                     self.update_rate_limit_from_headers(
-                        resp.headers()
+                        resource,
+                        headers
                             .get("X-RateLimit-Remaining")
                             .and_then(|h| h.to_str().ok()),
-                        resp.headers()
+                        headers
                             .get("X-RateLimit-Limit")
                             .and_then(|h| h.to_str().ok()),
-                        resp.headers()
+                        headers
                             .get("X-RateLimit-Reset")
                             .and_then(|h| h.to_str().ok()),
                     );
@@ -277,9 +428,14 @@ impl GitHubClient {
         Err("Max retries exceeded".to_string())
     }
 
-    fn request_raw(&self, url: &str) -> Result<String, String> {
+    fn request_raw_with_etag(
+        &self,
+        url: &str,
+        etag: Option<&str>,
+    ) -> Result<(String, Option<String>), String> {
         let _span = debug_span!("api_request_raw", url = %url).entered();
         let token = self.get_token()?;
+        let fallback_resource = RateLimitResource::from_url(url);
 
         for attempt in 0..3 {
             let mut req = ureq::get(url)
@@ -291,21 +447,72 @@ impl GitHubClient {
                 req = req.header("Authorization", &format!("Bearer {}", t));
             }
 
+            if let Some(etag_val) = etag {
+                req = req.header("If-None-Match", etag_val);
+            }
+
             self.api_calls.fetch_add(1, Ordering::SeqCst);
             match req.call() {
-                Ok(mut resp) => {
+                Ok(resp) if resp.status() == 304 => {
+                    let headers = resp.headers();
+                    let resource = RateLimitResource::from_header(
+                        headers
+                            .get("X-RateLimit-Resource")
+                            .and_then(|h| h.to_str().ok()),
+                        fallback_resource,
+                    );
                     self.update_rate_limit_from_headers(
-                        resp.headers()
+                        resource,
+                        headers
                             .get("X-RateLimit-Remaining")
                             .and_then(|h| h.to_str().ok()),
-                        resp.headers()
+                        headers
                             .get("X-RateLimit-Limit")
                             .and_then(|h| h.to_str().ok()),
-                        resp.headers()
+                        headers
                             .get("X-RateLimit-Reset")
                             .and_then(|h| h.to_str().ok()),
                     );
-                    return resp.body_mut().read_to_string().map_err(|e| e.to_string());
+                    self.cache_hits.fetch_add(1, Ordering::SeqCst);
+                    return Err("not_modified".to_string());
+                }
+                Ok(mut resp) => {
+                    let headers = resp.headers();
+                    let resource = RateLimitResource::from_header(
+                        headers
+                            .get("X-RateLimit-Resource")
+                            .and_then(|h| h.to_str().ok()),
+                        fallback_resource,
+                    );
+                    self.update_rate_limit_from_headers(
+                        resource,
+                        headers
+                            .get("X-RateLimit-Remaining")
+                            .and_then(|h| h.to_str().ok()),
+                        headers
+                            .get("X-RateLimit-Limit")
+                            .and_then(|h| h.to_str().ok()),
+                        headers
+                            .get("X-RateLimit-Reset")
+                            .and_then(|h| h.to_str().ok()),
+                    );
+
+                    let new_etag = resp
+                        .headers()
+                        .get("ETag")
+                        .and_then(|h| h.to_str().ok())
+                        .map(String::from);
+
+                    let data = resp
+                        .body_mut()
+                        .read_to_string()
+                        .map_err(|e| e.to_string())?;
+
+                    return Ok((data, new_etag));
+                }
+                Err(ureq::Error::StatusCode(304)) => {
+                    self.cache_hits.fetch_add(1, Ordering::SeqCst);
+                    return Err("not_modified".to_string());
                 }
                 Err(ureq::Error::StatusCode(404)) => return Err("not found".to_string()),
                 Err(ureq::Error::StatusCode(code)) if code == 403 || code == 429 => {
@@ -326,6 +533,44 @@ impl GitHubClient {
             }
         }
         Err("Max retries exceeded".to_string())
+    }
+
+    fn get_cached_raw(&self, cache_key: String, url: String) -> Result<String, String> {
+        let cached = {
+            let cache = self.cache.read().unwrap();
+            cache.raw_contents.get(&cache_key).cloned()
+        };
+
+        let etag = cached.as_ref().and_then(|e| e.etag.as_deref());
+
+        match self.request_raw_with_etag(&url, etag) {
+            Ok((data, new_etag)) => {
+                let mut cache = self.cache.write().unwrap();
+                cache.raw_contents.insert(
+                    cache_key,
+                    CacheEntry {
+                        data: data.clone(),
+                        etag: new_etag,
+                    },
+                );
+                Ok(data)
+            }
+            Err(e) if e == "not_modified" => {
+                debug!(key = %cache_key, "Cache hit (304)");
+                cached
+                    .map(|entry| entry.data)
+                    .ok_or_else(|| "not_modified without cached content".to_string())
+            }
+            Err(e) if e == "not found" => Err(e),
+            Err(e) => {
+                if let Some(entry) = cached {
+                    warn!(key = %cache_key, error = %e, "API failed, using cached content");
+                    Ok(entry.data)
+                } else {
+                    Err(e)
+                }
+            }
+        }
     }
 
     pub fn get_repository(&self, owner: &str, repo: &str) -> Result<Repository, String> {
@@ -353,7 +598,9 @@ impl GitHubClient {
             }
             Err(e) if e == "not_modified" => {
                 debug!(key = %cache_key, "Cache hit (304)");
-                Ok(cached.unwrap().data)
+                cached
+                    .map(|entry| entry.data)
+                    .ok_or_else(|| "not_modified without cached repository".to_string())
             }
             Err(e) => {
                 if let Some(entry) = cached {
@@ -372,11 +619,47 @@ impl GitHubClient {
     }
 
     pub fn get_releases(&self, owner: &str, repo: &str) -> Result<Vec<Release>, String> {
+        let cache_key = format!("{}/{}", owner, repo);
         let url = format!("{}/repos/{}/{}/releases?per_page=30", API_BASE, owner, repo);
-        self.request(&url)
+
+        let cached = {
+            let cache = self.cache.read().unwrap();
+            cache.releases.get(&cache_key).cloned()
+        };
+
+        let etag = cached.as_ref().and_then(|e| e.etag.as_deref());
+
+        match self.request_with_etag::<Vec<Release>>(&url, etag) {
+            Ok((data, new_etag)) => {
+                let mut cache = self.cache.write().unwrap();
+                cache.releases.insert(
+                    cache_key,
+                    CacheEntry {
+                        data: data.clone(),
+                        etag: new_etag,
+                    },
+                );
+                Ok(data)
+            }
+            Err(e) if e == "not_modified" => {
+                debug!(key = %cache_key, "Cache hit (304)");
+                cached
+                    .map(|entry| entry.data)
+                    .ok_or_else(|| "not_modified without cached releases".to_string())
+            }
+            Err(e) => {
+                if let Some(entry) = cached {
+                    warn!(key = %cache_key, error = %e, "API failed, using cached releases");
+                    Ok(entry.data)
+                } else {
+                    Err(e)
+                }
+            }
+        }
     }
 
     pub fn search_repositories(&self, query: &str, page: u32) -> Result<SearchResult, String> {
+        self.throttle_search(RateLimitResource::Search);
         let url = format!(
             "{}/search/repositories?q={}&per_page=100&page={}",
             API_BASE,
@@ -387,6 +670,7 @@ impl GitHubClient {
     }
 
     pub fn search_code(&self, query: &str, page: u32) -> Result<CodeSearchResult, String> {
+        self.throttle_search(RateLimitResource::CodeSearch);
         let url = format!(
             "{}/search/code?q={}&per_page=100&page={}",
             API_BASE,
@@ -397,8 +681,9 @@ impl GitHubClient {
     }
 
     pub fn get_readme(&self, owner: &str, repo: &str) -> Result<String, String> {
+        let cache_key = format!("readme/{}/{}", owner, repo);
         let url = format!("{}/repos/{}/{}/readme", API_BASE, owner, repo);
-        match self.request_raw(&url) {
+        match self.get_cached_raw(cache_key, url) {
             Ok(s) => Ok(s),
             Err(e) if e == "not found" => Ok(String::new()),
             Err(e) => Err(e),
@@ -410,8 +695,9 @@ impl GitHubClient {
     }
 
     pub fn get_file_content(&self, owner: &str, repo: &str, path: &str) -> Result<String, String> {
+        let cache_key = format!("contents/{}/{}/{}", owner, repo, path);
         let url = format!("{}/repos/{}/{}/contents/{}", API_BASE, owner, repo, path);
-        self.request_raw(&url)
+        self.get_cached_raw(cache_key, url)
     }
 
     pub fn get_file_content_at_ref(
@@ -421,6 +707,7 @@ impl GitHubClient {
         path: &str,
         git_ref: &str,
     ) -> Result<String, String> {
+        let cache_key = format!("contents/{}/{}/{}?ref={}", owner, repo, path, git_ref);
         let url = format!(
             "{}/repos/{}/{}/contents/{}?ref={}",
             API_BASE,
@@ -429,7 +716,7 @@ impl GitHubClient {
             path,
             urlencoded(git_ref)
         );
-        self.request_raw(&url)
+        self.get_cached_raw(cache_key, url)
     }
 
     pub fn list_directory(
@@ -463,6 +750,16 @@ impl GitHubClient {
 
         match self.request_with_etag::<GitTree>(&url, etag) {
             Ok((data, new_etag)) => {
+                // Do not cache truncated trees — they are incomplete and would cause
+                // false "plugin not found" deletions on subsequent runs when the API
+                // is rate-limited and falls back to this stale cache.
+                if data.truncated {
+                    warn!(
+                        key = %cache_key,
+                        "Tree truncated by GitHub, not caching (would cause incomplete data)"
+                    );
+                    return Ok(data);
+                }
                 let mut cache = self.cache.write().unwrap();
                 cache.trees.insert(
                     cache_key,
@@ -475,10 +772,33 @@ impl GitHubClient {
             }
             Err(e) if e == "not_modified" => {
                 debug!(key = %cache_key, "Cache hit (304)");
-                Ok(cached.unwrap().data)
+                let Some(entry) = cached else {
+                    return Err("not_modified without cached tree".to_string());
+                };
+                // Old cache files may already contain truncated trees. A 304 means
+                // GitHub did not send a fresh body, so reject incomplete cache here
+                // too instead of bypassing the non-cache path check above.
+                if entry.data.truncated {
+                    warn!(
+                        key = %cache_key,
+                        "Cached tree is truncated after 304, refusing to use incomplete data"
+                    );
+                    return Err("cached tree is truncated".to_string());
+                }
+                Ok(entry.data)
             }
             Err(e) => {
                 if let Some(entry) = cached {
+                    // Never use a truncated tree from cache — it is incomplete and
+                    // would cause plugins to be falsely marked as deleted.
+                    if entry.data.truncated {
+                        warn!(
+                            key = %cache_key,
+                            error = %e,
+                            "API failed and cached tree is truncated, refusing to use incomplete data"
+                        );
+                        return Err(e);
+                    }
                     warn!(key = %cache_key, error = %e, "API failed, using cached tree");
                     Ok(entry.data)
                 } else {
@@ -541,14 +861,14 @@ impl GitHubClient {
                         return;
                     }
 
-                    if !client.rate_limit.has_remaining() {
+                    if !client.rate_limit.has_core_remaining() {
                         stop_flag.store(true, Ordering::SeqCst);
                         return;
                     }
 
                     let result = handler(item, &client);
 
-                    if !client.rate_limit.has_remaining() {
+                    if !client.rate_limit.has_core_remaining() {
                         stop_flag.store(true, Ordering::SeqCst);
                     }
 
@@ -596,6 +916,70 @@ pub struct BatchResult<R> {
     pub processed: usize,
     pub total: usize,
     pub stopped_by_rate_limit: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classifies_search_rate_limit_resources_from_url() {
+        assert_eq!(
+            RateLimitResource::from_url("https://api.github.com/search/code?q=plugin.yml"),
+            RateLimitResource::CodeSearch
+        );
+        assert_eq!(
+            RateLimitResource::from_url("https://api.github.com/search/repositories?q=nukkit"),
+            RateLimitResource::Search
+        );
+        assert_eq!(
+            RateLimitResource::from_url("https://api.github.com/repos/owner/repo"),
+            RateLimitResource::Core
+        );
+    }
+
+    #[test]
+    fn keeps_search_remaining_out_of_core_bucket() {
+        let client = GitHubClient::new(Some("token".to_string()));
+
+        client.update_rate_limit_from_headers(
+            RateLimitResource::Search,
+            Some("9"),
+            Some("10"),
+            Some("1"),
+        );
+
+        assert_eq!(client.rate_limit.search_remaining(), 9);
+        assert_eq!(client.rate_limit.remaining(), usize::MAX);
+        assert!(client.rate_limit.has_core_remaining());
+
+        client.update_rate_limit_from_headers(
+            RateLimitResource::Core,
+            Some("49"),
+            Some("5000"),
+            Some("1"),
+        );
+
+        assert_eq!(client.rate_limit.remaining(), 49);
+        assert!(!client.rate_limit.has_core_remaining());
+    }
+
+    #[test]
+    fn cloned_clients_share_rate_limit_and_metrics() {
+        let client = GitHubClient::new(Some("token".to_string()));
+        let cloned = client.clone();
+
+        cloned.update_rate_limit_from_headers(
+            RateLimitResource::Core,
+            Some("123"),
+            Some("5000"),
+            Some("1"),
+        );
+        cloned.api_calls.fetch_add(3, Ordering::SeqCst);
+
+        assert_eq!(client.rate_limit.remaining(), 123);
+        assert_eq!(client.api_calls(), 3);
+    }
 }
 
 fn urlencoded(s: &str) -> String {

@@ -1,10 +1,11 @@
 use nukkitindexer::github::{client, init_client};
 use nukkitindexer::plugin::{delete_plugin, load_plugins, write_plugin};
 use nukkitindexer::search::build_orama_index;
-use nukkitindexer::sync::{discover_new_plugins, update_existing_plugins};
+use nukkitindexer::sync::{clear_discover_progress, discover_new_plugins, update_existing_plugins};
 use nukkitindexer::util::{
-    clear_processed_ids, extract_repo_full_name, has_flag, read_last_sync_with_buffer,
-    read_processed_ids, write_last_sync, write_processed_ids,
+    clear_failed_write_repos, clear_processed_ids, extract_repo_full_name, has_flag,
+    read_failed_write_repos, read_last_sync_with_buffer, read_processed_ids, write_failed_write_repos,
+    write_last_sync, write_processed_ids,
 };
 use std::collections::HashSet;
 use std::env;
@@ -251,6 +252,7 @@ fn cmd_discover(args: &[String]) {
     }
 
     let dry_run = has_flag(args, "--dry-run");
+    let force = has_flag(args, "--force");
     let index_dir = Path::new("NukkitHubIndex");
 
     if !index_dir.exists() {
@@ -265,13 +267,18 @@ fn cmd_discover(args: &[String]) {
     info!(count = plugins.len(), "Loaded existing plugins");
 
     let existing_ids: HashSet<String> = plugins.iter().map(|p| p.id.clone()).collect();
+    let failed_write_repos = read_failed_write_repos();
     let existing_repos: HashSet<String> = plugins
         .iter()
         .filter_map(|p| extract_repo_full_name(&p.source))
+        .filter(|repo| !failed_write_repos.contains(repo))
         .collect();
 
-    let last_sync = if has_flag(args, "--force") {
+    let last_sync = if force {
         info!("Full scan mode");
+        if !dry_run {
+            clear_discover_progress();
+        }
         None
     } else {
         read_last_sync_with_buffer()
@@ -280,9 +287,9 @@ fn cmd_discover(args: &[String]) {
         info!(since = %date, "Incremental scan");
     }
 
-    let discover = {
+    let mut discover = {
         let _span = info_span!("discover_plugins").entered();
-        discover_new_plugins(&existing_ids, &existing_repos, last_sync.as_deref())
+        discover_new_plugins(&existing_ids, &existing_repos, last_sync.as_deref(), !force)
     };
 
     if dry_run {
@@ -295,13 +302,42 @@ fn cmd_discover(args: &[String]) {
             }
         }
     } else {
+        let mut write_failed = false;
+        let mut new_failed_repos: HashSet<String> = HashSet::new();
         for plugin in &discover.new_plugins {
             debug!(name = %plugin.name, id = %plugin.id, "New plugin");
             if let Err(e) = write_plugin(plugin, index_dir) {
+                write_failed = true;
+                if let Some(repo) = extract_repo_full_name(&plugin.source) {
+                    new_failed_repos.insert(repo);
+                }
                 error!(id = %plugin.id, error = %e, "Failed to write plugin");
             }
         }
-        write_last_sync();
+
+        if write_failed {
+            let mut all_failed = failed_write_repos;
+            all_failed.extend(new_failed_repos.clone());
+            write_failed_write_repos(&all_failed);
+            discover.mark_repos_unprocessed(&new_failed_repos);
+            discover.save_progress();
+            warn!(
+                failed_repos = all_failed.len(),
+                "Discover writes failed; progress and failed repos saved for retry"
+            );
+        } else if discover.stopped_by_rate_limit {
+            clear_failed_write_repos();
+            discover.save_progress();
+            warn!(
+                processed = discover.processed,
+                total = discover.total,
+                "Discover stopped due to rate limit; progress saved for next run"
+            );
+        } else {
+            clear_failed_write_repos();
+            clear_discover_progress();
+            write_last_sync();
+        }
     }
 
     for (name, err) in &discover.errors {
@@ -311,6 +347,8 @@ fn cmd_discover(args: &[String]) {
     info!(
         mode = if dry_run { "preview" } else { "complete" },
         found = discover.new_plugins.len(),
+        processed = discover.processed,
+        total = discover.total,
         api_calls = client().api_calls(),
         cache_hits = client().cache_hits(),
         api_remaining = client().rate_limit.remaining(),

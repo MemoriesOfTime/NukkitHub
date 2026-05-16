@@ -1,4 +1,4 @@
-use crate::github::{GitTree, Repository};
+use crate::github::{GitTree, Release, Repository};
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
@@ -18,8 +18,20 @@ pub struct CacheEntry<T> {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct DataCache {
+    #[serde(default)]
     pub repositories: HashMap<String, CacheEntry<Repository>>,
+    #[serde(default)]
     pub trees: HashMap<String, CacheEntry<GitTree>>,
+    #[serde(default)]
+    pub releases: HashMap<String, CacheEntry<Vec<Release>>>,
+    #[serde(default)]
+    pub raw_contents: HashMap<String, CacheEntry<String>>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct LegacyDataCache {
+    repositories: HashMap<String, CacheEntry<Repository>>,
+    trees: HashMap<String, CacheEntry<GitTree>>,
 }
 
 impl DataCache {
@@ -35,15 +47,8 @@ impl DataCache {
             return Self::default();
         }
 
-        match postcard::from_bytes(&bytes) {
-            Ok(cache) => {
-                let cache: DataCache = cache;
-                let count = cache.repositories.len() + cache.trees.len();
-                if count > 0 {
-                    info!(entries = count, "Loaded data cache");
-                }
-                cache
-            }
+        match Self::from_bytes(&bytes) {
+            Ok(cache) => cache,
             Err(e) => {
                 info!(error = %e, "Failed to load cache, starting fresh");
                 Self::default()
@@ -51,8 +56,31 @@ impl DataCache {
         }
     }
 
+    fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+        if let Ok(cache) = postcard::from_bytes::<DataCache>(bytes) {
+            let count = cache.entry_count();
+            if count > 0 {
+                info!(entries = count, "Loaded data cache");
+            }
+            return Ok(cache);
+        }
+
+        let legacy = postcard::from_bytes::<LegacyDataCache>(bytes)
+            .map_err(|e| format!("postcard decode error: {}", e))?;
+        let cache = Self {
+            repositories: legacy.repositories,
+            trees: legacy.trees,
+            ..Self::default()
+        };
+        let count = cache.entry_count();
+        if count > 0 {
+            info!(entries = count, "Loaded legacy data cache");
+        }
+        Ok(cache)
+    }
+
     pub fn save(&self) {
-        let count = self.repositories.len() + self.trees.len();
+        let count = self.entry_count();
         if count == 0 {
             return;
         }
@@ -78,5 +106,27 @@ impl DataCache {
             Ok(_) => info!(entries = count, "Saved data cache"),
             Err(e) => info!(error = %e, "Failed to write cache"),
         }
+    }
+
+    fn entry_count(&self) -> usize {
+        self.repositories.len() + self.trees.len() + self.releases.len() + self.raw_contents.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loads_legacy_cache_shape() {
+        let legacy = LegacyDataCache::default();
+        let bytes = postcard::to_allocvec(&legacy).unwrap();
+
+        let cache = DataCache::from_bytes(&bytes).unwrap();
+
+        assert!(cache.repositories.is_empty());
+        assert!(cache.trees.is_empty());
+        assert!(cache.releases.is_empty());
+        assert!(cache.raw_contents.is_empty());
     }
 }

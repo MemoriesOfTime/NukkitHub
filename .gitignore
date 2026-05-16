@@ -68,4 +68,6 @@ allayindexer.exe
 .last_sync
 .data_cache.bin.gz
 .update_progress
+.discover_progress.json
+.discover_write_failures
 dist
