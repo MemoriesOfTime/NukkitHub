@@ -64,3 +64,21 @@ pub fn write_processed_ids(ids: &HashSet<String>) {
 pub fn clear_processed_ids() {
     let _ = fs::remove_file(".update_progress");
 }
+
+const FAILED_WRITE_REPOS_FILE: &str = ".discover_write_failures";
+
+pub fn read_failed_write_repos() -> HashSet<String> {
+    fs::read_to_string(FAILED_WRITE_REPOS_FILE)
+        .ok()
+        .map(|s| s.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
+        .unwrap_or_default()
+}
+
+pub fn write_failed_write_repos(repos: &HashSet<String>) {
+    let content: Vec<_> = repos.iter().map(|s| s.as_str()).collect();
+    let _ = fs::write(FAILED_WRITE_REPOS_FILE, content.join("\n"));
+}
+
+pub fn clear_failed_write_repos() {
+    let _ = fs::remove_file(FAILED_WRITE_REPOS_FILE);
+}

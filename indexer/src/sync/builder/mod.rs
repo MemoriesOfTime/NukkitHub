@@ -1,7 +1,7 @@
 mod image;
 mod link;
 
-use crate::github::{Contributor, GitTreeEntry, Release, Repository, client};
+use crate::github::{GitTreeEntry, Release, Repository, client};
 use crate::plugin::{
     Author, Dependency, GalleryItem, License, Links, Plugin, Version, VersionFile,
 };
@@ -430,10 +430,6 @@ fn build_plugin_id(
     format!("{}/{}--{}", owner, repo_name, suffix)
 }
 
-pub fn build_plugins_from_nukkit(repo: &Repository, manifest_paths: &[String]) -> Vec<Plugin> {
-    build_plugins_from_nukkit_with_tree(repo, manifest_paths, None)
-}
-
 pub fn build_plugins_from_nukkit_with_tree(
     repo: &Repository,
     manifest_paths: &[String],
@@ -459,9 +455,6 @@ pub fn build_plugins_from_nukkit_with_tree(
 
     let releases = client().get_releases(owner, repo_name).unwrap_or_default();
     let readme = client().get_readme(owner, repo_name).unwrap_or_default();
-    let contributors = client()
-        .get_contributors_by_url(&repo.contributors_url)
-        .unwrap_or_default();
 
     let license = repo.license.as_ref().map_or_else(
         || License {
@@ -530,7 +523,6 @@ pub fn build_plugins_from_nukkit_with_tree(
             &releases,
             &readme,
             &license,
-            &contributors,
             owner,
             repo_name,
             default_branch,
@@ -560,7 +552,6 @@ fn nukkit_yml_to_plugin(
     releases: &[Release],
     readme: &str,
     license: &License,
-    _contributors: &[Contributor],
     owner: &str,
     repo_name: &str,
     branch: &str,
