@@ -16,6 +16,22 @@ fn parse_timestamp(iso_string: &str) -> u64 {
         .unwrap_or(0)
 }
 
+fn project_updated_timestamp(repo: &Repository, releases: &[Release]) -> u64 {
+    let pushed_at = parse_timestamp(&repo.pushed_at);
+    let latest_release_at = releases
+        .iter()
+        .map(|release| parse_timestamp(&release.published_at))
+        .max()
+        .unwrap_or(0);
+
+    let activity_at = pushed_at.max(latest_release_at);
+    if activity_at > 0 {
+        activity_at
+    } else {
+        parse_timestamp(&repo.updated_at)
+    }
+}
+
 const CATEGORIES: &[&str] = &[
     "adventure",
     "cursed",
@@ -703,7 +719,7 @@ fn nukkit_yml_to_plugin(
         downloads: 0,
         stars: repo.stargazers_count,
         created_at: parse_timestamp(&repo.created_at),
-        updated_at: parse_timestamp(&repo.updated_at),
+        updated_at: project_updated_timestamp(repo, releases),
         icon_url: icon_url.to_string(),
         gallery,
         versions,
@@ -718,8 +734,50 @@ fn nukkit_yml_to_plugin(
 mod tests {
     use super::{
         build_plugin_id, detect_targets_from_build_content, group_manifest_paths,
-        is_plugin_manifest_path,
+        is_plugin_manifest_path, parse_timestamp, project_updated_timestamp,
     };
+    use crate::github::{Owner, Release, Repository};
+
+    fn repo_with_dates(updated_at: &str, pushed_at: &str) -> Repository {
+        Repository {
+            id: 1,
+            full_name: "owner/repo".to_string(),
+            name: "repo".to_string(),
+            description: None,
+            html_url: "https://github.com/owner/repo".to_string(),
+            stargazers_count: 0,
+            forks_count: 0,
+            created_at: "2019-01-01T00:00:00Z".to_string(),
+            updated_at: updated_at.to_string(),
+            pushed_at: pushed_at.to_string(),
+            owner: Owner {
+                login: "owner".to_string(),
+                avatar_url: String::new(),
+                html_url: String::new(),
+            },
+            license: None,
+            topics: Vec::new(),
+            is_template: false,
+            fork: false,
+            archived: false,
+            default_branch: Some("main".to_string()),
+            contributors_url: String::new(),
+        }
+    }
+
+    fn release_published_at(published_at: &str) -> Release {
+        Release {
+            id: 1,
+            tag_name: "v1.0.0".to_string(),
+            name: None,
+            body: None,
+            prerelease: false,
+            draft: false,
+            created_at: published_at.to_string(),
+            published_at: published_at.to_string(),
+            assets: Vec::new(),
+        }
+    }
 
     #[test]
     fn detects_supported_nukkit_markers() {
@@ -867,6 +925,37 @@ mod tests {
                 true,
             ),
             "owner/repo--modules-economy"
+        );
+    }
+
+    #[test]
+    fn project_updated_timestamp_uses_push_activity_over_repository_metadata_updates() {
+        let repo = repo_with_dates("2026-05-01T00:00:00Z", "2021-02-03T04:05:06Z");
+
+        assert_eq!(
+            project_updated_timestamp(&repo, &[]),
+            parse_timestamp("2021-02-03T04:05:06Z")
+        );
+    }
+
+    #[test]
+    fn project_updated_timestamp_includes_newer_release_activity() {
+        let repo = repo_with_dates("2026-05-01T00:00:00Z", "2021-02-03T04:05:06Z");
+        let releases = vec![release_published_at("2022-06-07T08:09:10Z")];
+
+        assert_eq!(
+            project_updated_timestamp(&repo, &releases),
+            parse_timestamp("2022-06-07T08:09:10Z")
+        );
+    }
+
+    #[test]
+    fn project_updated_timestamp_falls_back_to_repository_update_when_activity_dates_are_missing() {
+        let repo = repo_with_dates("2026-05-01T00:00:00Z", "");
+
+        assert_eq!(
+            project_updated_timestamp(&repo, &[]),
+            parse_timestamp("2026-05-01T00:00:00Z")
         );
     }
 }

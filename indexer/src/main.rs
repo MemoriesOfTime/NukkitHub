@@ -4,8 +4,8 @@ use nukkitindexer::search::build_orama_index;
 use nukkitindexer::sync::{clear_discover_progress, discover_new_plugins, update_existing_plugins};
 use nukkitindexer::util::{
     clear_failed_write_repos, clear_processed_ids, extract_repo_full_name, has_flag,
-    read_failed_write_repos, read_last_sync_with_buffer, read_processed_ids, write_failed_write_repos,
-    write_last_sync, write_processed_ids,
+    read_failed_write_repos, read_last_sync_with_buffer, read_processed_ids,
+    write_failed_write_repos, write_last_sync, write_processed_ids,
 };
 use std::collections::HashSet;
 use std::env;

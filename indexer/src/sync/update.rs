@@ -202,6 +202,7 @@ fn plugin_changed(old: &Plugin, new: &Plugin) -> bool {
         || old.manifest_path != new.manifest_path
         || old.detection_confidence != new.detection_confidence
         || old.summary != new.summary
+        || old.updated_at != new.updated_at
         || old.stars != new.stars
         || old.downloads != new.downloads
         || old.license != new.license
@@ -221,4 +222,29 @@ fn versions_changed(old: &[crate::plugin::Version], new: &[crate::plugin::Versio
     }
 
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::plugin_changed;
+    use crate::plugin::Plugin;
+
+    fn plugin_with_updated_at(updated_at: u64) -> Plugin {
+        let mut plugin: Plugin = serde_json::from_value(serde_json::json!({
+            "id": "owner/repo",
+            "name": "Plugin",
+            "source": "https://github.com/owner/repo"
+        }))
+        .unwrap();
+        plugin.updated_at = updated_at;
+        plugin
+    }
+
+    #[test]
+    fn plugin_changed_detects_updated_at_corrections() {
+        let old = plugin_with_updated_at(1_777_593_600);
+        let new = plugin_with_updated_at(1_612_325_106);
+
+        assert!(plugin_changed(&old, &new));
+    }
 }

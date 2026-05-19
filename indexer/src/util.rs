@@ -70,7 +70,12 @@ const FAILED_WRITE_REPOS_FILE: &str = ".discover_write_failures";
 pub fn read_failed_write_repos() -> HashSet<String> {
     fs::read_to_string(FAILED_WRITE_REPOS_FILE)
         .ok()
-        .map(|s| s.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
+        .map(|s| {
+            s.lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect()
+        })
         .unwrap_or_default()
 }
 
