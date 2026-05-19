@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import {FilterIcon, GridIcon, ImageIcon, ListIcon, SearchIcon, XIcon,} from '@modrinth/assets'
-import type {FilterType, FilterValue} from '@modrinth/ui'
+import { FilterIcon, GridIcon, ImageIcon, ListIcon, SearchIcon, XIcon } from '@modrinth/assets'
+import type { FilterType, FilterValue } from '@modrinth/ui'
 import {
   Button,
   ButtonStyled,
@@ -11,16 +11,16 @@ import {
   SearchSidebarFilter,
   useVIntl
 } from '@modrinth/ui'
-import {capitalizeString, cycleValue} from '@modrinth/utils'
-import {useThrottleFn} from '@vueuse/core'
+import { capitalizeString, cycleValue } from '@modrinth/utils'
+import { useThrottleFn } from '@vueuse/core'
 import semver from 'semver'
-import {computed, watch} from 'vue'
+import { computed, watch } from 'vue'
 
 import LogoAnimated from '~/components/brand/LogoAnimated.vue'
 import ProjectCard from '~/components/ui/ProjectCard.vue'
-import type {DisplayLocation, DisplayMode} from '~/plugins/cosmetics.ts'
-import {getTotalPages, type SortOption, usePluginSearch,} from '~/composables/usePlugins'
-import {useApiVersions, useCategories, usePluginTargets,} from '~/composables/useProjectTaxonomy'
+import type { DisplayLocation, DisplayMode } from '~/plugins/cosmetics.ts'
+import { getTotalPages, type SortOption, usePluginSearch } from '~/composables/usePlugins'
+import { useApiVersions, useCategories, usePluginTargets } from '~/composables/useProjectTaxonomy'
 
 const { formatMessage } = useVIntl()
 
@@ -42,7 +42,11 @@ const { data: pluginTargetsData } = usePluginTargets()
 const query = ref((route.query.q as string) ?? '')
 const currentPage = ref(Number(route.query.p) || 1)
 const perPage = ref(Number(route.query.pp) || 20)
-const sortType = ref<SortOption>((route.query.s as SortOption) ?? 'downloads')
+const sortType = ref<SortOption>((route.query.s as SortOption) ?? 'stars')
+// If user had 'downloads' from a previous URL, fallback to 'stars' when flag is off
+if (sortType.value === 'downloads' && !flags.value.showDownloadCounts) {
+  sortType.value = 'stars'
+}
 
 // Filter state
 const currentFilters = ref<FilterValue[]>([])
@@ -82,12 +86,17 @@ const selectedLicense = computed(() => {
 })
 
 // Sort options
-const sortOptions: { value: SortOption; label: string }[] = [
-  { value: 'downloads', label: 'Downloads' },
-  { value: 'stars', label: 'Stars' },
-  { value: 'updated', label: 'Updated' },
-  { value: 'newest', label: 'Newest' },
-]
+const sortOptions = computed<{ value: SortOption; label: string }[]>(() => {
+  const opts: { value: SortOption; label: string }[] = [
+    { value: 'stars', label: 'Stars' },
+    { value: 'updated', label: 'Updated' },
+    { value: 'newest', label: 'Newest' },
+  ]
+  if (flags.value.showDownloadCounts) {
+    opts.unshift({ value: 'downloads', label: 'Downloads' })
+  }
+  return opts
+})
 
 // Display modes
 const resultsDisplayLocation = computed<DisplayLocation>(() => 'plugin')
@@ -339,7 +348,7 @@ function updateSearchResults(pageNumber: number = 1, resetScroll = true) {
     const params: Record<string, string> = {}
     if (query.value) params.q = query.value
     if (currentPage.value > 1) params.p = String(currentPage.value)
-    if (sortType.value !== 'downloads') params.s = sortType.value
+    if (sortType.value !== 'stars') params.s = sortType.value
     if (perPage.value !== 20) params.pp = String(perPage.value)
     if (selectedCategories.value.length > 0)
       params.c = selectedCategories.value.join(',')
