@@ -48,6 +48,11 @@ export default defineNuxtConfig({
       ],
     },
   },
+  experimental: {
+    emitRouteChunkError: 'automatic-immediate',
+    restoreState: true,
+    checkOutdatedBuildInterval: 60_000,
+  },
   vite: {
     server: {
       fs: {
@@ -240,7 +245,7 @@ export default defineNuxtConfig({
     },
   },
   compatibilityDate: '2025-01-01',
-  telemetry: false
+  telemetry: false,
 })
 
 function isProduction() {
