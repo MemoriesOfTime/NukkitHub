@@ -374,7 +374,7 @@ import {
   InfoIcon,
   ScaleIcon,
   SearchIcon,
-  VersionIcon,
+  VersionIcon
 } from '@modrinth/assets'
 import {
   Avatar,
@@ -390,19 +390,19 @@ import {
   provideProjectPageContext,
   ScrollablePanel,
   useRelativeTime,
-  useVIntl,
+  useVIntl
 } from '@modrinth/ui'
 import VersionSummary from '@modrinth/ui/src/components/version/VersionSummary.vue'
-import {formatProjectType} from '@modrinth/utils'
+import { formatProjectType } from '@modrinth/utils'
 import dayjs from 'dayjs'
 
-import {navigateTo} from '#app'
+import { navigateTo } from '#app'
 import Accordion from '~/components/ui/Accordion.vue'
 import AutomaticAccordion from '~/components/ui/AutomaticAccordion.vue'
 import MessageBanner from '~/components/ui/MessageBanner.vue'
 import NavTabs from '~/components/ui/NavTabs.vue'
-import {usePlugin} from '~/composables/usePlugins'
-import {useApiVersions} from '~/composables/useProjectTaxonomy'
+import { usePlugin } from '~/composables/usePlugins'
+import { useApiVersions } from '~/composables/useProjectTaxonomy'
 import type AllayIndex from '~/types/allayhub-index'
 
 const route = useNativeRoute()
@@ -802,22 +802,49 @@ function transformPluginToProject(
 }
 
 // Create MemberView from plugin authors
+const GITHUB_USERNAME_PATTERN = /^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/i
+
+function getGitHubAvatarUrl(username: string | undefined): string | null {
+  const trimmed = username?.trim()
+  if (!trimmed || !GITHUB_USERNAME_PATTERN.test(trimmed)) return null
+  return `https://github.com/${trimmed}.png`
+}
+
+function getPluginOwner(plugin: AllayIndex.Plugin): string {
+  return plugin.id.split('/')[0]?.trim() || ''
+}
+
+function getAuthorAvatarUrl(
+  plugin: AllayIndex.Plugin,
+  author: AllayIndex.Author,
+  index: number,
+): string {
+  const explicitAvatar = author.avatar_url?.trim()
+  if (explicitAvatar) return explicitAvatar
+
+  const ownerAvatar =
+    index === 0 ? getGitHubAvatarUrl(getPluginOwner(plugin)) : null
+  if (ownerAvatar) return ownerAvatar
+
+  return getGitHubAvatarUrl(author.name) || '/placeholder.svg'
+}
+
 function createMembersFromAuthors(
   plugin: AllayIndex.Plugin | null,
 ): AllayIndex.MemberView[] {
   if (!plugin) return []
 
   const normalizedAuthors = plugin.authors
-    .map((author) => ({
+    .map((author, index) => ({
       name: author.name?.trim() || '',
-      avatar_url: author.avatar_url || '/placeholder.png',
+      avatar_url: getAuthorAvatarUrl(plugin, author, index),
     }))
     .filter((author) => author.name.length > 0)
 
-  const fallbackOwner = plugin.id.split('/')[0]?.trim()
+  const fallbackOwner = getPluginOwner(plugin)
   if (normalizedAuthors.length === 0 && fallbackOwner) {
     const fallbackAvatar =
-      plugin.icon_url || `https://github.com/${fallbackOwner}.png`
+      getGitHubAvatarUrl(fallbackOwner) || plugin.icon_url || '/placeholder.svg'
     normalizedAuthors.push({
       name: fallbackOwner,
       avatar_url: fallbackAvatar,
@@ -979,7 +1006,7 @@ useSeoMeta({
   description: () => description.value,
   ogTitle: () => title.value,
   ogDescription: () => project.value.description,
-  ogImage: () => project.value.icon_url ?? '/placeholder.png',
+  ogImage: () => project.value.icon_url ?? '/placeholder.svg',
   robots: () =>
     project.value.status === 'approved' || project.value.status === 'archived'
       ? 'all'

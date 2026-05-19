@@ -1,6 +1,6 @@
 <template>
   <img
-    v-if="src"
+    v-if="imageSrc"
     ref="img"
     class="`experimental-styles-within avatar shrink-0"
     :style="`--_size: ${cssSize}`"
@@ -10,10 +10,11 @@
       raised: raised,
       pixelated: pixelated,
     }"
-    :src="src"
+    :src="imageSrc"
     :alt="alt"
     :loading="loading"
     @load="updatePixelated"
+    @error="hasFailedToLoad = true"
   />
   <svg
     v-else
@@ -45,9 +46,10 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 const pixelated = ref(false)
+const hasFailedToLoad = ref(false)
 const img = ref(null)
 
 const props = defineProps({
@@ -94,6 +96,15 @@ const LEGACY_PRESETS = {
 }
 
 const cssSize = computed(() => LEGACY_PRESETS[props.size] ?? props.size)
+const imageSrc = computed(() => (hasFailedToLoad.value ? null : props.src))
+
+watch(
+  () => props.src,
+  () => {
+    hasFailedToLoad.value = false
+    pixelated.value = false
+  },
+)
 
 function updatePixelated() {
   if (img.value && img.value.naturalWidth && img.value.naturalWidth < 32) {
