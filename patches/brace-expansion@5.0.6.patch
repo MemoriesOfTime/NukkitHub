@@ -1,0 +1,42 @@
+diff --git a/dist/commonjs/index.js b/dist/commonjs/index.js
+index 88a978d3d00a2d1a399c7d011f7a73368fef3f9d..c781ef6bd25c7b0c979e14f824f090f4a6d6c011 100644
+--- a/dist/commonjs/index.js
++++ b/dist/commonjs/index.js
+@@ -2,7 +2,8 @@
+ Object.defineProperty(exports, "__esModule", { value: true });
+ exports.EXPANSION_MAX = void 0;
+ exports.expand = expand;
+ const balanced_match_1 = require("balanced-match");
++const balanced = balanced_match_1.balanced ?? balanced_match_1;
+ const escSlash = '\0SLASH' + Math.random() + '\0';
+ const escOpen = '\0OPEN' + Math.random() + '\0';
+ const escClose = '\0CLOSE' + Math.random() + '\0';
+@@ -40,7 +41,7 @@ function parseCommaParts(str) {
+         return [''];
+     }
+     const parts = [];
+-    const m = (0, balanced_match_1.balanced)('{', '}', str);
++    const m = balanced('{', '}', str);
+     if (!m) {
+         return str.split(',');
+     }
+@@ -71,7 +72,7 @@ const expand_ = (str, max, isTop) => {
+     if (!str) {
+         return [''];
+     }
+-    const m = (0, balanced_match_1.balanced)('{', '}', str);
++    const m = balanced('{', '}', str);
+     if (!m || /\$$/.test(m.pre)) {
+         return [str];
+     }
+diff --git a/dist/esm/index.js b/dist/esm/index.js
+index 42d6429ba1b498ddedb5e6253c3f0cc243a9c9f4..1437413f61b11aca530e0ad8b5cfc297208a52da 100644
+--- a/dist/esm/index.js
++++ b/dist/esm/index.js
+@@ -1,4 +1,5 @@
+-import { balanced } from 'balanced-match';
++import * as balancedMatch from 'balanced-match';
++const balanced = balancedMatch.balanced ?? balancedMatch.default;
+ const escSlash = '\0SLASH' + Math.random() + '\0';
+ const escOpen = '\0OPEN' + Math.random() + '\0';
+ const escClose = '\0CLOSE' + Math.random() + '\0';
