@@ -236,7 +236,9 @@ fn cmd_update(args: &[String]) {
         unchanged = update.unchanged.len(),
         api_calls = client().api_calls(),
         cache_hits = client().cache_hits(),
-        api_remaining = client().rate_limit.remaining(),
+        core_remaining = client().rate_limit.remaining(),
+        search_remaining = client().rate_limit.search_remaining(),
+        code_search_remaining = client().rate_limit.code_search_remaining(),
         "Update finished"
     );
 
@@ -291,7 +293,6 @@ fn cmd_discover(args: &[String]) {
         let _span = info_span!("discover_plugins").entered();
         discover_new_plugins(&existing_ids, &existing_repos, last_sync.as_deref(), !force)
     };
-
     if dry_run {
         if discover.new_plugins.is_empty() {
             info!("No new plugins found");
@@ -320,18 +321,48 @@ fn cmd_discover(args: &[String]) {
             all_failed.extend(new_failed_repos.clone());
             write_failed_write_repos(&all_failed);
             discover.mark_repos_unprocessed(&new_failed_repos);
-            discover.save_progress();
-            warn!(
-                failed_repos = all_failed.len(),
-                "Discover writes failed; progress and failed repos saved for retry"
-            );
+            if discover.can_resume_progress() {
+                discover.save_progress();
+                warn!(
+                    failed_repos = all_failed.len(),
+                    "Discover writes failed; progress and failed repos saved for retry"
+                );
+            } else {
+                clear_discover_progress();
+                warn!(
+                    failed_repos = all_failed.len(),
+                    "Discover writes failed after incomplete candidate collection; only failed repos were saved"
+                );
+            }
         } else if discover.stopped_by_rate_limit {
+            clear_failed_write_repos();
+            if discover.can_resume_progress() {
+                discover.save_progress();
+                warn!(
+                    processed = discover.processed,
+                    total = discover.total,
+                    "Discover stopped due to rate limit; progress saved for next run"
+                );
+            } else {
+                clear_discover_progress();
+                warn!(
+                    processed = discover.processed,
+                    total = discover.total,
+                    "Discover stopped before candidate collection completed; next run will recollect candidates"
+                );
+            }
+        } else if !discover.collection_complete {
+            clear_failed_write_repos();
+            clear_discover_progress();
+            warn!("Discover candidate collection was incomplete; last_sync not updated");
+        } else if !discover.can_finalize_sync() {
             clear_failed_write_repos();
             discover.save_progress();
             warn!(
                 processed = discover.processed,
                 total = discover.total,
-                "Discover stopped due to rate limit; progress saved for next run"
+                errors = discover.errors.len(),
+                "Discover finished with pending repo retries; progress saved and last_sync not updated"
             );
         } else {
             clear_failed_write_repos();
@@ -351,7 +382,9 @@ fn cmd_discover(args: &[String]) {
         total = discover.total,
         api_calls = client().api_calls(),
         cache_hits = client().cache_hits(),
-        api_remaining = client().rate_limit.remaining(),
+        core_remaining = client().rate_limit.remaining(),
+        search_remaining = client().rate_limit.search_remaining(),
+        code_search_remaining = client().rate_limit.code_search_remaining(),
         "Discover finished"
     );
 

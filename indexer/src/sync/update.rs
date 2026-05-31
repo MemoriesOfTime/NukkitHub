@@ -13,6 +13,14 @@ pub struct UpdateResult {
     pub stopped_by_rate_limit: bool,
 }
 
+fn should_mark_update_processed(status: &Result<UpdateStatus, String>) -> bool {
+    status.is_ok()
+}
+
+fn is_missing_repo_error(error: &str) -> bool {
+    error == "not found" || error.contains("404")
+}
+
 pub fn update_existing_plugins(plugins: &[Plugin], force: bool) -> UpdateResult {
     if plugins.is_empty() {
         return UpdateResult {
@@ -37,7 +45,9 @@ pub fn update_existing_plugins(plugins: &[Plugin], force: bool) -> UpdateResult 
     let mut processed_ids = HashSet::new();
 
     for (id, status) in batch.results {
-        processed_ids.insert(id.clone());
+        if should_mark_update_processed(&status) {
+            processed_ids.insert(id.clone());
+        }
         match status {
             Ok(UpdateStatus::Updated(plugin)) => updated.push(*plugin),
             Ok(UpdateStatus::Unchanged) => unchanged.push(id),
@@ -96,7 +106,7 @@ fn update_plugin(plugin: &Plugin, force: bool) -> Result<UpdateStatus, String> {
 
     let repo = match client().get_repository(&owner, &repo_name) {
         Ok(r) => r,
-        Err(e) if e.contains("404") => {
+        Err(e) if is_missing_repo_error(&e) => {
             debug!(id = %plugin.id, "Plugin repo not found, marking deleted");
             return Ok(UpdateStatus::Deleted);
         }
@@ -226,7 +236,9 @@ fn versions_changed(old: &[crate::plugin::Version], new: &[crate::plugin::Versio
 
 #[cfg(test)]
 mod tests {
-    use super::plugin_changed;
+    use super::{
+        is_missing_repo_error, plugin_changed, should_mark_update_processed, UpdateStatus,
+    };
     use crate::plugin::Plugin;
 
     fn plugin_with_updated_at(updated_at: u64) -> Plugin {
@@ -246,5 +258,21 @@ mod tests {
         let new = plugin_with_updated_at(1_612_325_106);
 
         assert!(plugin_changed(&old, &new));
+    }
+
+    #[test]
+    fn only_successful_updates_are_marked_processed() {
+        assert!(should_mark_update_processed(&Ok(UpdateStatus::Unchanged)));
+        assert!(should_mark_update_processed(&Ok(UpdateStatus::Deleted)));
+        assert!(!should_mark_update_processed(&Err(
+            "HTTP status 500".to_string()
+        )));
+    }
+
+    #[test]
+    fn detects_missing_repo_errors() {
+        assert!(is_missing_repo_error("HTTP status 404"));
+        assert!(is_missing_repo_error("not found"));
+        assert!(!is_missing_repo_error("HTTP status 500"));
     }
 }

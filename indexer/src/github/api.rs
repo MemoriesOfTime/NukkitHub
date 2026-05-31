@@ -47,6 +47,27 @@ impl ResponseCache {
             raw_contents: self.raw_contents.clone(),
         }
     }
+
+    fn clear_repository_related(&mut self, owner: &str, repo: &str) {
+        let repo_key = format!("{}/{}", owner, repo);
+        let readme_key = format!("readme/{}/{}", owner, repo);
+        let content_prefix = format!("contents/{}/{}/", owner, repo);
+        let tree_prefix = format!("{}/{}/", owner, repo);
+
+        self.repositories.remove(&repo_key);
+        self.releases.remove(&repo_key);
+        self.trees.retain(|key, _| !key.starts_with(&tree_prefix));
+        self.raw_contents
+            .retain(|key, _| key != &readme_key && !key.starts_with(&content_prefix));
+    }
+}
+
+fn is_missing_repository_error(error: &str) -> bool {
+    error == "not found" || error.contains("404")
+}
+
+fn should_use_cached_repository_on_error(error: &str) -> bool {
+    !is_missing_repository_error(error)
 }
 
 #[derive(Clone)]
@@ -297,6 +318,31 @@ impl GitHubClient {
         }
     }
 
+    fn update_rate_limit_from_response_headers(
+        &self,
+        fallback_resource: RateLimitResource,
+        headers: &ureq::http::HeaderMap,
+    ) {
+        let resource = RateLimitResource::from_header(
+            headers
+                .get("X-RateLimit-Resource")
+                .and_then(|h| h.to_str().ok()),
+            fallback_resource,
+        );
+        self.update_rate_limit_from_headers(
+            resource,
+            headers
+                .get("X-RateLimit-Remaining")
+                .and_then(|h| h.to_str().ok()),
+            headers
+                .get("X-RateLimit-Limit")
+                .and_then(|h| h.to_str().ok()),
+            headers
+                .get("X-RateLimit-Reset")
+                .and_then(|h| h.to_str().ok()),
+        );
+    }
+
     fn throttle_search(&self, resource: RateLimitResource) {
         let interval = match resource {
             RateLimitResource::Search => SEARCH_MIN_INTERVAL,
@@ -345,51 +391,38 @@ impl GitHubClient {
                 req = req.header("If-None-Match", etag_val);
             }
 
+            let req = req.config().http_status_as_error(false).build();
+
             self.api_calls.fetch_add(1, Ordering::SeqCst);
             match req.call() {
-                Ok(resp) if resp.status() == 304 => {
-                    let headers = resp.headers();
-                    let resource = RateLimitResource::from_header(
-                        headers
-                            .get("X-RateLimit-Resource")
-                            .and_then(|h| h.to_str().ok()),
-                        fallback_resource,
-                    );
-                    self.update_rate_limit_from_headers(
-                        resource,
-                        headers
-                            .get("X-RateLimit-Remaining")
-                            .and_then(|h| h.to_str().ok()),
-                        headers
-                            .get("X-RateLimit-Limit")
-                            .and_then(|h| h.to_str().ok()),
-                        headers
-                            .get("X-RateLimit-Reset")
-                            .and_then(|h| h.to_str().ok()),
-                    );
-                    self.cache_hits.fetch_add(1, Ordering::SeqCst);
-                    return Err("not_modified".to_string());
-                }
                 Ok(mut resp) => {
+                    let status = resp.status().as_u16();
                     let headers = resp.headers();
-                    let resource = RateLimitResource::from_header(
-                        headers
-                            .get("X-RateLimit-Resource")
-                            .and_then(|h| h.to_str().ok()),
-                        fallback_resource,
-                    );
-                    self.update_rate_limit_from_headers(
-                        resource,
-                        headers
-                            .get("X-RateLimit-Remaining")
-                            .and_then(|h| h.to_str().ok()),
-                        headers
-                            .get("X-RateLimit-Limit")
-                            .and_then(|h| h.to_str().ok()),
-                        headers
-                            .get("X-RateLimit-Reset")
-                            .and_then(|h| h.to_str().ok()),
-                    );
+                    self.update_rate_limit_from_response_headers(fallback_resource, headers);
+
+                    if status == 304 {
+                        self.cache_hits.fetch_add(1, Ordering::SeqCst);
+                        return Err("not_modified".to_string());
+                    }
+
+                    if status == 403 || status == 429 {
+                        if attempt < 2 {
+                            let wait = 30u64 * (1 << attempt);
+                            warn!(
+                                code = status,
+                                wait_secs = wait,
+                                attempt = attempt + 1,
+                                "Rate limited, exponential backoff"
+                            );
+                            thread::sleep(Duration::from_secs(wait));
+                            continue;
+                        }
+                        return Err(format!("Rate limited after {} attempts", attempt + 1));
+                    }
+
+                    if status >= 400 {
+                        return Err(format!("HTTP status {}", status));
+                    }
 
                     let new_etag = resp
                         .headers()
@@ -403,24 +436,6 @@ impl GitHubClient {
                         .map_err(|e| format!("Parse error: {}", e))?;
 
                     return Ok((data, new_etag));
-                }
-                Err(ureq::Error::StatusCode(304)) => {
-                    self.cache_hits.fetch_add(1, Ordering::SeqCst);
-                    return Err("not_modified".to_string());
-                }
-                Err(ureq::Error::StatusCode(code)) if code == 403 || code == 429 => {
-                    if attempt < 2 {
-                        let wait = 30u64 * (1 << attempt);
-                        warn!(
-                            code = code,
-                            wait_secs = wait,
-                            attempt = attempt + 1,
-                            "Rate limited, exponential backoff"
-                        );
-                        thread::sleep(Duration::from_secs(wait));
-                        continue;
-                    }
-                    return Err(format!("Rate limited after {} attempts", attempt + 1));
                 }
                 Err(e) => return Err(format!("HTTP error: {}", e)),
             }
@@ -451,51 +466,42 @@ impl GitHubClient {
                 req = req.header("If-None-Match", etag_val);
             }
 
+            let req = req.config().http_status_as_error(false).build();
+
             self.api_calls.fetch_add(1, Ordering::SeqCst);
             match req.call() {
-                Ok(resp) if resp.status() == 304 => {
-                    let headers = resp.headers();
-                    let resource = RateLimitResource::from_header(
-                        headers
-                            .get("X-RateLimit-Resource")
-                            .and_then(|h| h.to_str().ok()),
-                        fallback_resource,
-                    );
-                    self.update_rate_limit_from_headers(
-                        resource,
-                        headers
-                            .get("X-RateLimit-Remaining")
-                            .and_then(|h| h.to_str().ok()),
-                        headers
-                            .get("X-RateLimit-Limit")
-                            .and_then(|h| h.to_str().ok()),
-                        headers
-                            .get("X-RateLimit-Reset")
-                            .and_then(|h| h.to_str().ok()),
-                    );
-                    self.cache_hits.fetch_add(1, Ordering::SeqCst);
-                    return Err("not_modified".to_string());
-                }
                 Ok(mut resp) => {
+                    let status = resp.status().as_u16();
                     let headers = resp.headers();
-                    let resource = RateLimitResource::from_header(
-                        headers
-                            .get("X-RateLimit-Resource")
-                            .and_then(|h| h.to_str().ok()),
-                        fallback_resource,
-                    );
-                    self.update_rate_limit_from_headers(
-                        resource,
-                        headers
-                            .get("X-RateLimit-Remaining")
-                            .and_then(|h| h.to_str().ok()),
-                        headers
-                            .get("X-RateLimit-Limit")
-                            .and_then(|h| h.to_str().ok()),
-                        headers
-                            .get("X-RateLimit-Reset")
-                            .and_then(|h| h.to_str().ok()),
-                    );
+                    self.update_rate_limit_from_response_headers(fallback_resource, headers);
+
+                    if status == 304 {
+                        self.cache_hits.fetch_add(1, Ordering::SeqCst);
+                        return Err("not_modified".to_string());
+                    }
+
+                    if status == 404 {
+                        return Err("not found".to_string());
+                    }
+
+                    if status == 403 || status == 429 {
+                        if attempt < 2 {
+                            let wait = 30u64 * (1 << attempt);
+                            warn!(
+                                code = status,
+                                wait_secs = wait,
+                                attempt = attempt + 1,
+                                "Rate limited, exponential backoff"
+                            );
+                            thread::sleep(Duration::from_secs(wait));
+                            continue;
+                        }
+                        return Err(format!("Rate limited after {} attempts", attempt + 1));
+                    }
+
+                    if status >= 400 {
+                        return Err(format!("HTTP status {}", status));
+                    }
 
                     let new_etag = resp
                         .headers()
@@ -509,25 +515,6 @@ impl GitHubClient {
                         .map_err(|e| e.to_string())?;
 
                     return Ok((data, new_etag));
-                }
-                Err(ureq::Error::StatusCode(304)) => {
-                    self.cache_hits.fetch_add(1, Ordering::SeqCst);
-                    return Err("not_modified".to_string());
-                }
-                Err(ureq::Error::StatusCode(404)) => return Err("not found".to_string()),
-                Err(ureq::Error::StatusCode(code)) if code == 403 || code == 429 => {
-                    if attempt < 2 {
-                        let wait = 30u64 * (1 << attempt);
-                        warn!(
-                            code = code,
-                            wait_secs = wait,
-                            attempt = attempt + 1,
-                            "Rate limited, exponential backoff"
-                        );
-                        thread::sleep(Duration::from_secs(wait));
-                        continue;
-                    }
-                    return Err(format!("Rate limited after {} attempts", attempt + 1));
                 }
                 Err(e) => return Err(format!("HTTP error: {}", e)),
             }
@@ -601,6 +588,20 @@ impl GitHubClient {
                 cached
                     .map(|entry| entry.data)
                     .ok_or_else(|| "not_modified without cached repository".to_string())
+            }
+            Err(e) if !should_use_cached_repository_on_error(&e) => {
+                let had_cached = cached.is_some();
+                if had_cached {
+                    let mut cache = self.cache.write().unwrap();
+                    cache.clear_repository_related(owner, repo);
+                }
+                warn!(
+                    key = %cache_key,
+                    error = %e,
+                    had_cached = had_cached,
+                    "Repository missing, refusing stale cache fallback"
+                );
+                Err("not found".to_string())
             }
             Err(e) => {
                 if let Some(entry) = cached {
@@ -921,6 +922,19 @@ pub struct BatchResult<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    fn sample_repository() -> Repository {
+        serde_json::from_value(json!({
+            "id": 1,
+            "full_name": "owner/repo",
+            "name": "repo",
+            "owner": {
+                "login": "owner"
+            }
+        }))
+        .unwrap()
+    }
 
     #[test]
     fn classifies_search_rate_limit_resources_from_url() {
@@ -979,6 +993,133 @@ mod tests {
 
         assert_eq!(client.rate_limit.remaining(), 123);
         assert_eq!(client.api_calls(), 3);
+    }
+
+    #[test]
+    fn updates_rate_limit_from_response_headers_using_fallback_resource() {
+        let client = GitHubClient::new(Some("token".to_string()));
+        let mut headers = ureq::http::HeaderMap::new();
+        headers.insert("X-RateLimit-Resource", "search".parse().unwrap());
+        headers.insert("X-RateLimit-Remaining", "7".parse().unwrap());
+        headers.insert("X-RateLimit-Limit", "10".parse().unwrap());
+        headers.insert("X-RateLimit-Reset", "123".parse().unwrap());
+
+        client.update_rate_limit_from_response_headers(RateLimitResource::CodeSearch, &headers);
+
+        assert_eq!(client.rate_limit.code_search_remaining(), 7);
+        assert_eq!(client.rate_limit.search_remaining(), usize::MAX);
+    }
+
+    #[test]
+    fn missing_repository_errors_never_use_cached_repository() {
+        assert!(!should_use_cached_repository_on_error("HTTP status 404"));
+        assert!(!should_use_cached_repository_on_error("not found"));
+        assert!(should_use_cached_repository_on_error(
+            "Rate limited after 3 attempts"
+        ));
+    }
+
+    #[test]
+    fn evicts_repository_related_cache_entries() {
+        let repo = sample_repository();
+        let mut cache = ResponseCache::from_data_cache(DataCache {
+            repositories: [(
+                "owner/repo".to_string(),
+                CacheEntry {
+                    data: repo.clone(),
+                    etag: Some("repo-etag".to_string()),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            trees: [(
+                "owner/repo/main".to_string(),
+                CacheEntry {
+                    data: GitTree {
+                        sha: "sha".to_string(),
+                        tree: Vec::new(),
+                        truncated: false,
+                    },
+                    etag: Some("tree-etag".to_string()),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            releases: [(
+                "owner/repo".to_string(),
+                CacheEntry {
+                    data: Vec::new(),
+                    etag: Some("release-etag".to_string()),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            raw_contents: [
+                (
+                    "readme/owner/repo".to_string(),
+                    CacheEntry {
+                        data: "readme".to_string(),
+                        etag: Some("readme-etag".to_string()),
+                    },
+                ),
+                (
+                    "contents/owner/repo/plugin.yml".to_string(),
+                    CacheEntry {
+                        data: "name: test".to_string(),
+                        etag: Some("content-etag".to_string()),
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        });
+
+        cache.clear_repository_related("owner", "repo");
+
+        assert!(cache.repositories.is_empty());
+        assert!(cache.trees.is_empty());
+        assert!(cache.releases.is_empty());
+        assert!(cache.raw_contents.is_empty());
+    }
+
+    #[test]
+    fn only_evicts_tree_cache_for_exact_repository_prefix() {
+        let mut cache = ResponseCache::from_data_cache(DataCache {
+            repositories: HashMap::new(),
+            trees: [
+                (
+                    "owner/repo/main".to_string(),
+                    CacheEntry {
+                        data: GitTree {
+                            sha: "sha-1".to_string(),
+                            tree: Vec::new(),
+                            truncated: false,
+                        },
+                        etag: Some("tree-etag-1".to_string()),
+                    },
+                ),
+                (
+                    "owner/repo2/main".to_string(),
+                    CacheEntry {
+                        data: GitTree {
+                            sha: "sha-2".to_string(),
+                            tree: Vec::new(),
+                            truncated: false,
+                        },
+                        etag: Some("tree-etag-2".to_string()),
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            releases: HashMap::new(),
+            raw_contents: HashMap::new(),
+        });
+
+        cache.clear_repository_related("owner", "repo");
+
+        assert!(!cache.trees.contains_key("owner/repo/main"));
+        assert!(cache.trees.contains_key("owner/repo2/main"));
     }
 }
 

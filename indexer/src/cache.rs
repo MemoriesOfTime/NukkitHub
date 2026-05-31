@@ -4,8 +4,9 @@ use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufReader, Read, Write};
+use std::path::Path;
 use tracing::info;
 
 const CACHE_FILE: &str = ".data_cache.bin.gz";
@@ -80,8 +81,17 @@ impl DataCache {
     }
 
     pub fn save(&self) {
+        self.save_to_path(Path::new(CACHE_FILE));
+    }
+
+    fn save_to_path(&self, path: &Path) {
         let count = self.entry_count();
         if count == 0 {
+            match fs::remove_file(path) {
+                Ok(_) => info!("Cleared empty data cache file"),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => info!(error = %e, "Failed to clear empty data cache file"),
+            }
             return;
         }
 
@@ -93,7 +103,7 @@ impl DataCache {
             }
         };
 
-        let file = match File::create(CACHE_FILE) {
+        let file = match File::create(path) {
             Ok(f) => f,
             Err(e) => {
                 info!(error = %e, "Failed to create cache file");
@@ -113,6 +123,14 @@ impl DataCache {
     }
 }
 
+pub fn clear_data_cache() {
+    match fs::remove_file(CACHE_FILE) {
+        Ok(_) => info!("Cleared data cache"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => info!(error = %e, "Failed to clear data cache"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,5 +146,25 @@ mod tests {
         assert!(cache.trees.is_empty());
         assert!(cache.releases.is_empty());
         assert!(cache.raw_contents.is_empty());
+    }
+
+    #[test]
+    fn empty_cache_save_removes_existing_file() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "nukkithub-cache-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let cache_file = temp_dir.join("cache.bin.gz");
+        fs::write(&cache_file, b"stale").unwrap();
+
+        DataCache::default().save_to_path(&cache_file);
+
+        assert!(!cache_file.exists());
+        fs::remove_dir_all(&temp_dir).unwrap();
     }
 }
