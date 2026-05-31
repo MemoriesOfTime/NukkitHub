@@ -7,6 +7,7 @@ import {
 } from '@modrinth/assets'
 
 import { defineMessages, useVIntl } from '../../composables/i18n'
+
 const { formatMessage } = useVIntl()
 
 const { updateColorTheme, currentTheme, themeOptions, systemThemeColor } =
@@ -65,6 +66,14 @@ function getPreviewClass(option: T): string {
   const base = option === 'system' ? systemThemeColor : option
   return base.endsWith('-mode') ? base : `${base}-mode`
 }
+
+function formatThemeLabel(option: T): string {
+  const key = asString(option)
+
+  return key in colorTheme
+    ? formatMessage(colorTheme[key as keyof typeof colorTheme])
+    : option
+}
 </script>
 
 <template>
@@ -89,11 +98,7 @@ function getPreviewClass(option: T): string {
           class="radio shrink-0"
         />
         <RadioButtonIcon v-else class="radio shrink-0" />
-        {{
-          colorTheme[asString(option)]
-            ? formatMessage(colorTheme[asString(option)])
-            : option
-        }}
+        {{ formatThemeLabel(option) }}
         <SunIcon
           v-if="'light' === option"
           v-tooltip="formatMessage(colorTheme.preferredLight)"

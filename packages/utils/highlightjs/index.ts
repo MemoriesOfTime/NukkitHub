@@ -59,10 +59,10 @@ hljs.registerAliases(['html', 'htm', 'xhtml', 'mcui', 'fxml'], {
 
 export { hljs }
 
-export const renderHighlightedString = (string) =>
+export const renderHighlightedString = (string: string) =>
   configuredXss.process(
     md({
-      highlight(str, lang) {
+      highlight(str: string, lang: string) {
         if (lang && hljs.getLanguage(lang)) {
           try {
             return hljs.highlight(str, { language: lang }).value

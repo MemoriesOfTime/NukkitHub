@@ -85,7 +85,7 @@ const dateTooltip = computed(() =>
 )
 
 const relativeDate = computed(() =>
-  formatRelativeTime(props.entry.date.toISOString()),
+  formatRelativeTime(props.entry.date.toDate()),
 )
 const longDate = computed(() => props.entry.date.format('MMMM D, YYYY'))
 const versionName = computed(() => props.entry.version ?? longDate.value)

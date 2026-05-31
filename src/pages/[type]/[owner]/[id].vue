@@ -918,9 +918,9 @@ const project = computed<AllayIndex.ProjectView>(
 )
 const projectV3 = computed(() => ({
   ...project.value,
-  environment: ['server'],
+  environment: ['server_only' as const],
   project_types: ['plugin'],
-  side_types_migration_review_status: null,
+  side_types_migration_review_status: 'reviewed' as const,
 }))
 const allMembers = computed(() => createMembersFromAuthors(pluginData.value))
 const dependencies = ref({ projects: [], versions: [] })

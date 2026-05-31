@@ -105,7 +105,11 @@ const $searchResults = computed(() => {
   return new Map<Category, LocaleInfo[]>([
     [
       'searchResult',
-      isQueryEmpty() ? [] : fuse.search($query.value).map(({ item }) => item),
+      isQueryEmpty()
+        ? []
+        : fuse
+            .search($query.value)
+            .map(({ item }: { item: LocaleInfo }) => item),
     ],
   ])
 })

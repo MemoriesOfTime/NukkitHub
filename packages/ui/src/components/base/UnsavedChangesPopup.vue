@@ -44,8 +44,11 @@ const props = withDefaults(
 
 const shown = computed(() => {
   let changed = false
-  for (const key of Object.keys(props.modified)) {
-    if (props.original[key] !== props.modified[key]) {
+  const original = props.original as Record<string, unknown>
+  const modified = props.modified as Record<string, unknown>
+
+  for (const key of Object.keys(modified)) {
+    if (original[key] !== modified[key]) {
       changed = true
     }
   }

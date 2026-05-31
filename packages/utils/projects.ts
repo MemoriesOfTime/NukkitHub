@@ -1,30 +1,33 @@
 // noinspection JSUnusedGlobalSymbols
 
-export const isApproved = (project) => {
+type ProjectStatusLike = { status: string } | null | undefined
+type ProjectGameVersionsLike = { game_versions: string[] }
+
+export const isApproved = (project: ProjectStatusLike) => {
   return project && APPROVED_PROJECT_STATUSES.includes(project.status)
 }
 
-export const isListed = (project) => {
+export const isListed = (project: ProjectStatusLike) => {
   return project && LISTED_PROJECT_STATUSES.includes(project.status)
 }
 
-export const isUnlisted = (project) => {
+export const isUnlisted = (project: ProjectStatusLike) => {
   return project && UNLISTED_PROJECT_STATUSES.includes(project.status)
 }
 
-export const isPrivate = (project) => {
+export const isPrivate = (project: ProjectStatusLike) => {
   return project && PRIVATE_PROJECT_STATUSES.includes(project.status)
 }
 
-export const isRejected = (project) => {
+export const isRejected = (project: ProjectStatusLike) => {
   return project && REJECTED_PROJECT_STATUSES.includes(project.status)
 }
 
-export const isUnderReview = (project) => {
+export const isUnderReview = (project: ProjectStatusLike) => {
   return project && UNDER_REVIEW_PROJECT_STATUSES.includes(project.status)
 }
 
-export const isDraft = (project) => {
+export const isDraft = (project: ProjectStatusLike) => {
   return project && DRAFT_PROJECT_STATUSES.includes(project.status)
 }
 
@@ -63,7 +66,7 @@ export type PlatformTag = {
 }
 
 export function getVersionsToDisplay(
-  project,
+  project: ProjectGameVersionsLike,
   allGameVersions: GameVersionTag[],
 ) {
   return formatVersionsForDisplay(
@@ -98,10 +101,13 @@ export function formatVersionsForDisplay(
   )
 
   {
-    const indices = allVersions.reduce((map, gameVersion, index) => {
-      map[gameVersion.version] = index
-      return map
-    }, {})
+    const indices = allVersions.reduce(
+      (map, gameVersion, index) => {
+        map[gameVersion.version] = index
+        return map
+      },
+      {} as Record<string, number>,
+    )
     inputVersions.sort((a, b) => indices[a] - indices[b])
   }
 

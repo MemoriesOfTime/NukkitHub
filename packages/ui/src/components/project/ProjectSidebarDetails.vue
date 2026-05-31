@@ -107,19 +107,23 @@ const props = defineProps<{
 
 const createdDate = computed(() =>
   props.project.published
-    ? formatRelativeTime(props.project.published)
+    ? formatRelativeTime(new Date(props.project.published))
     : 'unknown',
 )
 const submittedDate = computed(() =>
-  props.project.queued ? formatRelativeTime(props.project.queued) : 'unknown',
+  props.project.queued
+    ? formatRelativeTime(new Date(props.project.queued))
+    : 'unknown',
 )
 const publishedDate = computed(() =>
   props.project.approved
-    ? formatRelativeTime(props.project.approved)
+    ? formatRelativeTime(new Date(props.project.approved))
     : 'unknown',
 )
 const updatedDate = computed(() =>
-  props.project.updated ? formatRelativeTime(props.project.updated) : 'unknown',
+  props.project.updated
+    ? formatRelativeTime(new Date(props.project.updated))
+    : 'unknown',
 )
 
 const licenseIdDisplay = computed(() => {

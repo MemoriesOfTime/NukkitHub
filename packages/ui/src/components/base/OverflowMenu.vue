@@ -117,7 +117,12 @@ defineOptions({
   inheritAttrs: false,
 })
 
-const dropdown: Ref<InstanceType<typeof PopoutMenu> | null> = ref(null)
+type PopoutMenuExpose = {
+  hide: () => void
+  show: () => void
+}
+
+const dropdown: Ref<PopoutMenuExpose | null> = ref(null)
 
 const close = () => {
   dropdown.value?.hide()
