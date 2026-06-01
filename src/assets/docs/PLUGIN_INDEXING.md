@@ -43,9 +43,8 @@ Recommended setup:
 
 - Use `src/main/resources/plugin.yml`
 - Add the `nukkit-plugin` topic
-- Reference NukkitX-related repositories or dependencies such as:
+- Reference NukkitX-related runtime dependencies or strong repository markers such as:
   - `cloudburstmc`
-  - `opencollab.dev`
   - `repo.nukkitx.com`
 
 If your plugin uses generic `cn.nukkit:*` dependencies, it may be treated as shared compatibility for both NukkitX and Nukkit-MOT.

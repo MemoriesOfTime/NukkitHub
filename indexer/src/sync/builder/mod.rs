@@ -298,7 +298,7 @@ fn detect_targets_from_topics(topics: &[String]) -> (BTreeSet<&'static str>, Det
 fn detect_targets_from_build_content(
     content_lower: &str,
 ) -> (BTreeSet<&'static str>, DetectionConfidence) {
-    const NKX_INDICATORS: &[&str] = &["cloudburstmc", "opencollab.dev", "repo.nukkitx.com"];
+    const NKX_INDICATORS: &[&str] = &["cloudburstmc", "repo.nukkitx.com"];
     const NKMOT_INDICATORS: &[&str] = &["memoriesoftime", "nukkit-mot"];
     const PNX_INDICATORS: &[&str] = &[
         "cn.powernukkitx",
@@ -783,7 +783,7 @@ mod tests {
     fn detects_supported_nukkit_markers() {
         let gradle = r#"
             repositories {
-                maven { url = uri("https://repo.opencollab.dev/maven-releases/") }
+                maven { url = uri("https://repo.nukkitx.com/maven-releases/") }
             }
 
             dependencies {
@@ -794,6 +794,22 @@ mod tests {
         let (targets, confidence) = detect_targets_from_build_content(&gradle.to_lowercase());
         assert_eq!(targets.into_iter().collect::<Vec<_>>(), vec!["nkx"]);
         assert_eq!(confidence.as_str(), "high");
+    }
+
+    #[test]
+    fn does_not_treat_opencollab_repository_as_runtime_target_signal() {
+        let pom = r#"
+            <repositories>
+                <repository>
+                    <id>opencollab-snapshot</id>
+                    <url>https://repo.opencollab.dev/main/</url>
+                </repository>
+            </repositories>
+        "#;
+
+        let (targets, confidence) = detect_targets_from_build_content(&pom.to_lowercase());
+        assert!(targets.is_empty());
+        assert_eq!(confidence.as_str(), "low");
     }
 
     #[test]

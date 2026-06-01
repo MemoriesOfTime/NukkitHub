@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import {defineMessages, useVIntl} from '@modrinth/ui'
+import { defineMessages, useVIntl } from '@modrinth/ui'
 
 const { formatMessage } = useVIntl()
 
@@ -91,7 +91,7 @@ const coreRecipes: CoreRecipe[] = [
     manifest: '`src/main/resources/plugin.yml`',
     topics: ['`nukkit-plugin`'],
     actions: [
-      'Use NukkitX-related dependencies or repositories such as `cloudburstmc`, `opencollab.dev`, or `repo.nukkitx.com`.',
+      'Use NukkitX-related runtime dependencies or strong repository markers such as `cloudburstmc` or `repo.nukkitx.com`.',
       'If your plugin is meant for both NukkitX and Nukkit-MOT, generic `cn.nukkit:*` dependencies are acceptable.',
     ],
     note: 'If you want shared compatibility with Nukkit-MOT, `nukkit-plugin` plus `cn.nukkit:*` is enough.',
