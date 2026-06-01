@@ -10,8 +10,9 @@
 </template>
 
 <script>
-import {formatCategory} from '@modrinth/utils'
-import {useCategories} from '~/composables/useProjectTaxonomy'
+import { formatCategory } from '@modrinth/utils'
+
+import { useCategories } from '~/composables/useProjectTaxonomy'
 
 export default {
   props: {
@@ -36,7 +37,7 @@ export default {
       const allCategories = this.categoriesData?.categories || []
       return allCategories.filter(
         (x) =>
-          this.categories.includes(x.name) &&
+          this.categories.includes(x.id) &&
           (!x.project_type || x.project_type === this.type),
       )
     },

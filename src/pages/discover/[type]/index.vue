@@ -1,5 +1,12 @@
 <script setup lang="ts">
-import { FilterIcon, GridIcon, ImageIcon, ListIcon, SearchIcon, XIcon } from '@modrinth/assets'
+import {
+  FilterIcon,
+  GridIcon,
+  ImageIcon,
+  ListIcon,
+  SearchIcon,
+  XIcon,
+} from '@modrinth/assets'
 import type { FilterType, FilterValue } from '@modrinth/ui'
 import {
   Button,
@@ -9,7 +16,7 @@ import {
   Pagination,
   SearchFilterControl,
   SearchSidebarFilter,
-  useVIntl
+  useVIntl,
 } from '@modrinth/ui'
 import { capitalizeString, cycleValue } from '@modrinth/utils'
 import { useThrottleFn } from '@vueuse/core'
@@ -18,9 +25,17 @@ import { computed, watch } from 'vue'
 
 import LogoAnimated from '~/components/brand/LogoAnimated.vue'
 import ProjectCard from '~/components/ui/ProjectCard.vue'
+import {
+  getTotalPages,
+  type SortOption,
+  usePluginSearch,
+} from '~/composables/usePlugins'
+import {
+  useApiVersions,
+  useCategories,
+  usePluginTargets,
+} from '~/composables/useProjectTaxonomy'
 import type { DisplayLocation, DisplayMode } from '~/plugins/cosmetics.ts'
-import { getTotalPages, type SortOption, usePluginSearch } from '~/composables/usePlugins'
-import { useApiVersions, useCategories, usePluginTargets } from '~/composables/useProjectTaxonomy'
 
 const { formatMessage } = useVIntl()
 
@@ -58,6 +73,12 @@ const providedFilters = ref<FilterValue[]>([])
 const selectedCategories = computed(() =>
   currentFilters.value
     .filter((f) => f.type === 'categories' && !f.negative)
+    .map((f) => f.option),
+)
+
+const excludedCategories = computed(() =>
+  currentFilters.value
+    .filter((f) => f.type === 'categories' && f.negative)
     .map((f) => f.option),
 )
 
@@ -283,6 +304,10 @@ function buildSearchFilters() {
       selectedCategories.value.length > 0
         ? selectedCategories.value
         : undefined,
+    excludedCategories:
+      excludedCategories.value.length > 0
+        ? excludedCategories.value
+        : undefined,
     targets:
       selectedTargets.value.length > 0 ? selectedTargets.value : undefined,
     apiMajor: selectedApiMajor.value,
@@ -350,8 +375,11 @@ function updateSearchResults(pageNumber: number = 1, resetScroll = true) {
     if (currentPage.value > 1) params.p = String(currentPage.value)
     if (sortType.value !== 'stars') params.s = sortType.value
     if (perPage.value !== 20) params.pp = String(perPage.value)
-    if (selectedCategories.value.length > 0)
-      params.c = selectedCategories.value.join(',')
+    const categoryParams = [
+      ...selectedCategories.value,
+      ...excludedCategories.value.map((category) => `categories!=${category}`),
+    ]
+    if (categoryParams.length > 0) params.c = categoryParams.join(',')
     if (selectedTargets.value.length > 0)
       params.t = selectedTargets.value.join(',')
 
@@ -396,12 +424,46 @@ function setClosestMaxResults() {
 // Parse filter string like "categories:management" or "g=categories:management"
 function parseFilterString(
   filterStr: string,
-): { type: string; option: string } | null {
+): { type: string; option: string; negative: boolean } | null {
+  const negativeMatch = filterStr.match(/^(\w+)!=(.+)$/)
+  if (negativeMatch) {
+    return {
+      type: negativeMatch[1],
+      option: negativeMatch[2],
+      negative: true,
+    }
+  }
   const match = filterStr.match(/^(\w+):(.+)$/)
   if (match) {
-    return { type: match[1], option: match[2] }
+    return { type: match[1], option: match[2], negative: false }
   }
   return null
+}
+
+function getQueryValues(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => getQueryValues(item))
+  }
+  if (typeof value !== 'string') return []
+  return value.split(',').filter(Boolean)
+}
+
+function parseCategoryQueryValue(value: string): {
+  option: string
+  negative: boolean
+} {
+  const parsed = parseFilterString(value)
+  if (parsed?.type === 'categories') {
+    return {
+      option: parsed.option,
+      negative: parsed.negative,
+    }
+  }
+
+  return {
+    option: value,
+    negative: false,
+  }
 }
 
 // Initialize search on mount
@@ -419,12 +481,14 @@ onMounted(() => {
 
   // Parse URL params for categories
   if (route.query.c) {
-    const categoryIds = (route.query.c as string).split(',')
-    categoryIds.forEach((catId) => {
+    const categoryIds = getQueryValues(route.query.c).map(
+      parseCategoryQueryValue,
+    )
+    categoryIds.forEach((category) => {
       currentFilters.value.push({
         type: 'categories',
-        option: catId,
-        negative: false,
+        option: category.option,
+        negative: category.negative,
       })
     })
   }
@@ -456,7 +520,7 @@ onMounted(() => {
       currentFilters.value.push({
         type: parsed.type,
         option: parsed.option,
-        negative: false,
+        negative: parsed.negative,
       })
     }
   }
@@ -681,8 +745,8 @@ useSeoMeta({
         >
           <ProjectCard
             v-for="result in searchResults"
-            :key="result.id"
             :id="result.id"
+            :key="result.id"
             :display="resultsDisplayMode"
             type="plugin"
             :author="result.author"

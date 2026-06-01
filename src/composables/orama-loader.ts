@@ -5,8 +5,8 @@
  * Uses singleton pattern to prevent multiple index loads.
  */
 
-import {type Orama, search as oramaSearch} from '@orama/orama'
-import {restore} from '@orama/plugin-data-persistence'
+import { type Orama, search as oramaSearch } from '@orama/orama'
+import { restore } from '@orama/plugin-data-persistence'
 
 /**
  * Document returned from search
@@ -49,6 +49,7 @@ export type PluginSearchDB = Orama<{
 
 export interface OramaSearchFilters {
   categories?: string[]
+  excludedCategories?: string[]
   targets?: string[]
   license?: 'open-source' | 'closed-source'
   apiMajor?: number
@@ -68,6 +69,38 @@ export interface SearchResult {
   elapsed: number
 }
 
+type WhereClause =
+  | {
+      categories: {
+        containsAny: string[]
+      }
+    }
+  | {
+      targets: {
+        containsAny: string[]
+      }
+    }
+  | {
+      license: {
+        eq: 'open-source' | 'closed-source'
+      }
+    }
+  | {
+      api_major: {
+        lte: number
+      }
+    }
+  | {
+      not: {
+        categories: {
+          containsAny: string[]
+        }
+      }
+    }
+  | {
+      and: WhereClause[]
+    }
+
 // Singleton cache
 const CACHE_KEY = '__orama_cache__'
 
@@ -77,10 +110,11 @@ interface OramaCache {
 }
 
 function getCache(): OramaCache {
-  if (!(globalThis as any)[CACHE_KEY]) {
-    ;(globalThis as any)[CACHE_KEY] = { db: null, loading: null }
+  const globalCache = globalThis as Record<string, OramaCache | undefined>
+  if (!globalCache[CACHE_KEY]) {
+    globalCache[CACHE_KEY] = { db: null, loading: null }
   }
-  return (globalThis as any)[CACHE_KEY]
+  return globalCache[CACHE_KEY] as OramaCache
 }
 
 /**
@@ -128,18 +162,33 @@ export async function searchPlugins(
 
   const db = await loadOramaIndex()
 
-  const where: Record<string, any> = {}
+  const whereClauses: WhereClause[] = []
   if (filters.categories?.length) {
-    where.categories = { containsAny: filters.categories }
+    whereClauses.push({
+      categories: { containsAny: filters.categories },
+    })
+  }
+  if (filters.excludedCategories?.length) {
+    whereClauses.push({
+      not: {
+        categories: { containsAny: filters.excludedCategories },
+      },
+    })
   }
   if (filters.targets?.length) {
-    where.targets = { containsAny: filters.targets }
+    whereClauses.push({
+      targets: { containsAny: filters.targets },
+    })
   }
   if (filters.license) {
-    where.license = { eq: filters.license }
+    whereClauses.push({
+      license: { eq: filters.license },
+    })
   }
   if (filters.apiMajor !== undefined) {
-    where.api_major = { lte: filters.apiMajor }
+    whereClauses.push({
+      api_major: { lte: filters.apiMajor },
+    })
   }
 
   // Build sort options
@@ -156,7 +205,12 @@ export async function searchPlugins(
     }
   })()
 
-  const whereClause = Object.keys(where).length > 0 ? where : undefined
+  const whereClause =
+    whereClauses.length === 0
+      ? undefined
+      : whereClauses.length === 1
+        ? whereClauses[0]
+        : { and: whereClauses }
 
   const results = await oramaSearch(db, {
     term,

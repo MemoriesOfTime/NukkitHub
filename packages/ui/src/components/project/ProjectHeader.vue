@@ -49,9 +49,10 @@
             :key="index"
             :action="
               () =>
-                router.push(
-                  `/${project.project_type}s?f=categories:${category}`,
-                )
+                router.push({
+                  path: `/discover/${project.project_type}s`,
+                  query: { c: category },
+                })
             "
           >
             {{ formatCategory(category) }}
@@ -65,9 +66,9 @@
   </ContentPageHeader>
 </template>
 <script setup lang="ts">
-import {DownloadIcon, HeartIcon, TagsIcon} from '@modrinth/assets'
-import {formatCategory, formatNumber, type Project} from '@modrinth/utils'
-import {useRouter} from 'vue-router'
+import { DownloadIcon, HeartIcon, TagsIcon } from '@modrinth/assets'
+import { formatCategory, formatNumber, type Project } from '@modrinth/utils'
+import { useRouter } from 'vue-router'
 
 import Avatar from '../base/Avatar.vue'
 import ContentPageHeader from '../base/ContentPageHeader.vue'

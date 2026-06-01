@@ -374,7 +374,7 @@ import {
   InfoIcon,
   ScaleIcon,
   SearchIcon,
-  VersionIcon
+  VersionIcon,
 } from '@modrinth/assets'
 import {
   Avatar,
@@ -390,7 +390,7 @@ import {
   provideProjectPageContext,
   ScrollablePanel,
   useRelativeTime,
-  useVIntl
+  useVIntl,
 } from '@modrinth/ui'
 import VersionSummary from '@modrinth/ui/src/components/version/VersionSummary.vue'
 import { formatProjectType } from '@modrinth/utils'

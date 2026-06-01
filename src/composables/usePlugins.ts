@@ -1,12 +1,20 @@
-import {type ComputedRef, type Ref, toValue} from 'vue'
+import { type ComputedRef, type Ref, toValue } from 'vue'
+
 import type AllayIndex from '~/types/allayhub-index'
-import {getAllPlugins, type OramaSearchFilters, type PluginDocument, searchPlugins,} from './orama-loader'
+
+import {
+  getAllPlugins,
+  type OramaSearchFilters,
+  type PluginDocument,
+  searchPlugins,
+} from './orama-loader'
 
 export type SortOption = 'downloads' | 'stars' | 'updated' | 'newest'
 
 export interface SearchFilters {
   query?: string
   categories?: string[]
+  excludedCategories?: string[]
   targets?: string[]
   apiMajor?: number
   license?: 'open-source' | 'closed-source'
@@ -42,15 +50,19 @@ function getRepoNameFromId(id: string): string {
 }
 
 function processPluginData(data: AllayIndex.Plugin): AllayIndex.Plugin {
-  const result: Record<string, unknown> = { ...data }
-  for (const key of Object.keys(result)) {
+  const result: Record<string, unknown> = {}
+  const rawData = data as unknown as Record<string, unknown>
+
+  for (const [key, value] of Object.entries(rawData)) {
     if (key.startsWith('!')) {
       const normalKey = key.slice(1)
-      if (!(normalKey in result) || result[normalKey] === undefined) {
-        result[normalKey] = result[key]
+      if (!(normalKey in rawData) || rawData[normalKey] === undefined) {
+        result[normalKey] = value
       }
-      delete result[key]
+      continue
     }
+
+    result[key] = value
   }
 
   const pluginId = typeof result.id === 'string' ? result.id : ''
@@ -223,7 +235,14 @@ export function usePluginSearch() {
     filters: SearchFilters = {},
     options: SearchOptions = {},
   ): Promise<PluginSearchResult> {
-    const { query, categories, targets, apiMajor, license } = filters
+    const {
+      query,
+      categories,
+      excludedCategories,
+      targets,
+      apiMajor,
+      license,
+    } = filters
     const { sort = 'downloads', limit, page, perPage = 20 } = options
 
     isSearching.value = true
@@ -233,6 +252,9 @@ export function usePluginSearch() {
       const oramaFilters: OramaSearchFilters = {}
       if (categories?.length) {
         oramaFilters.categories = categories
+      }
+      if (excludedCategories?.length) {
+        oramaFilters.excludedCategories = excludedCategories
       }
       if (targets?.length) {
         oramaFilters.targets = targets
