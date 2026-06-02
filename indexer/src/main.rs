@@ -80,6 +80,12 @@ fn print_usage() {
     println!("  --app-id <ID>                App ID (or GITHUB_APP_ID env)");
     println!("  --installation-id <ID>       Installation ID (or GITHUB_INSTALLATION_ID env)");
     println!("  --private-key-file <PATH>    Path to .pem file (or GITHUB_PRIVATE_KEY env)");
+    println!();
+    println!("AI category classification (optional):");
+    println!("  NUKKITHUB_AI_API_KEY         Enable README-based OpenAI-compatible classification");
+    println!("  NUKKITHUB_AI_BASE_URL        API base URL (default: https://api.deepseek.com)");
+    println!("  NUKKITHUB_AI_MODEL           Chat model (default: deepseek-v4-flash)");
+    println!("  NUKKITHUB_AI_TIMEOUT_SECONDS Request timeout (default: 45)");
 }
 
 fn cmd_build() {

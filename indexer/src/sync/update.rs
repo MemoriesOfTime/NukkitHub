@@ -217,6 +217,7 @@ fn plugin_changed(old: &Plugin, new: &Plugin) -> bool {
         || old.downloads != new.downloads
         || old.license != new.license
         || old.authors != new.authors
+        || old.categories != new.categories
         || versions_changed(&old.versions, &new.versions)
 }
 
@@ -237,7 +238,7 @@ fn versions_changed(old: &[crate::plugin::Version], new: &[crate::plugin::Versio
 #[cfg(test)]
 mod tests {
     use super::{
-        is_missing_repo_error, plugin_changed, should_mark_update_processed, UpdateStatus,
+        UpdateStatus, is_missing_repo_error, plugin_changed, should_mark_update_processed,
     };
     use crate::plugin::Plugin;
 
@@ -256,6 +257,17 @@ mod tests {
     fn plugin_changed_detects_updated_at_corrections() {
         let old = plugin_with_updated_at(1_777_593_600);
         let new = plugin_with_updated_at(1_612_325_106);
+
+        assert!(plugin_changed(&old, &new));
+    }
+
+    #[test]
+    fn plugin_changed_detects_category_changes() {
+        let mut old = plugin_with_updated_at(1_612_325_106);
+        old.categories = vec!["utility".to_string()];
+
+        let mut new = plugin_with_updated_at(1_612_325_106);
+        new.categories = vec!["economy".to_string()];
 
         assert!(plugin_changed(&old, &new));
     }

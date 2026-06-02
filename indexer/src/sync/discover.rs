@@ -1455,7 +1455,9 @@ mod tests {
     #[test]
     fn repo_errors_remain_pending_for_retry() {
         assert!(should_mark_repo_processed(&Ok(Vec::new())));
-        assert!(!should_mark_repo_processed(&Err("HTTP status 500".to_string())));
+        assert!(!should_mark_repo_processed(&Err(
+            "HTTP status 500".to_string()
+        )));
         assert!(!should_mark_repo_processed(&Err(
             "Rate limited after 3 attempts".to_string()
         )));

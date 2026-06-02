@@ -471,6 +471,7 @@ pub fn build_plugins_from_nukkit_with_tree(
 
     let releases = client().get_releases(owner, repo_name).unwrap_or_default();
     let readme = client().get_readme(owner, repo_name).unwrap_or_default();
+    let repo_categories = detect_categories(repo, &readme);
 
     let license = repo.license.as_ref().map_or_else(
         || License {
@@ -544,6 +545,7 @@ pub fn build_plugins_from_nukkit_with_tree(
             default_branch,
             &icon_url,
             repo_gallery.clone(),
+            &repo_categories,
             manifest_path,
             &target_detection,
             is_multi_module,
@@ -573,6 +575,7 @@ fn nukkit_yml_to_plugin(
     branch: &str,
     icon_url: &str,
     repo_gallery: Vec<GalleryItem>,
+    categories: &[String],
     manifest_path: &str,
     target_detection: &TargetDetection,
     is_multi_module: bool,
@@ -658,20 +661,6 @@ fn nukkit_yml_to_plugin(
         .filter(|v| !v.is_empty() && !is_placeholder(v))
         .unwrap_or_else(|| "unknown".to_string());
 
-    let categories: Vec<String> = repo
-        .topics
-        .iter()
-        .filter_map(|t| {
-            // Strip "nukkit-" prefix if present
-            let normalized = t.strip_prefix("nukkit-").unwrap_or(t);
-            if CATEGORIES.contains(&normalized) {
-                Some(normalized.to_string())
-            } else {
-                None
-            }
-        })
-        .collect();
-
     // Handle placeholder names by falling back to repo name
     let plugin_name = if is_placeholder(&yml.name) || yml.name.trim().is_empty() {
         debug!(
@@ -709,7 +698,7 @@ fn nukkit_yml_to_plugin(
         summary,
         description: processed_readme,
         authors,
-        categories,
+        categories: categories.to_vec(),
         license: license.clone(),
         links: yml.website.as_ref().map(|w| Links {
             homepage: w.clone(),
@@ -730,11 +719,46 @@ fn nukkit_yml_to_plugin(
     })
 }
 
+fn detect_categories(repo: &Repository, readme: &str) -> Vec<String> {
+    let topic_categories = categories_from_topics(&repo.topics);
+
+    if crate::ai::category_classification_enabled() {
+        let ai_categories = crate::ai::classify_readme_categories(readme, CATEGORIES);
+        return combine_categories(topic_categories, ai_categories);
+    }
+
+    topic_categories
+}
+
+fn categories_from_topics(topics: &[String]) -> Vec<String> {
+    topics
+        .iter()
+        .filter_map(|topic| {
+            let normalized = topic.strip_prefix("nukkit-").unwrap_or(topic);
+            if CATEGORIES.contains(&normalized) {
+                Some(normalized.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn combine_categories(topic_categories: Vec<String>, ai_categories: Vec<String>) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    topic_categories
+        .into_iter()
+        .chain(ai_categories)
+        .filter(|category| seen.insert(category.clone()))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        build_plugin_id, detect_targets_from_build_content, group_manifest_paths,
-        is_plugin_manifest_path, parse_timestamp, project_updated_timestamp,
+        build_plugin_id, categories_from_topics, combine_categories,
+        detect_targets_from_build_content, group_manifest_paths, is_plugin_manifest_path,
+        parse_timestamp, project_updated_timestamp,
     };
     use crate::github::{Owner, Release, Repository};
 
@@ -925,6 +949,34 @@ mod tests {
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].len(), 2);
         assert_eq!(groups[1].len(), 1);
+    }
+
+    #[test]
+    fn categories_use_nukkit_prefixed_topics() {
+        let categories = categories_from_topics(&[
+            "nukkit-economy".to_string(),
+            "utility".to_string(),
+            "nukkit-plugin".to_string(),
+        ]);
+
+        assert_eq!(categories, vec!["economy", "utility"]);
+    }
+
+    #[test]
+    fn category_detection_keeps_topics_when_ai_returns_no_categories() {
+        let categories = combine_categories(vec!["economy".to_string()], Vec::new());
+
+        assert_eq!(categories, vec!["economy"]);
+    }
+
+    #[test]
+    fn category_detection_appends_ai_categories_without_duplicates() {
+        let categories = combine_categories(
+            vec!["economy".to_string(), "utility".to_string()],
+            vec!["utility".to_string(), "management".to_string()],
+        );
+
+        assert_eq!(categories, vec!["economy", "utility", "management"]);
     }
 
     #[test]
