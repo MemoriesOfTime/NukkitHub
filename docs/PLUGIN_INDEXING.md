@@ -83,6 +83,7 @@ Recommended setup:
 - Add the `lumi-plugin` topic
 - Reference Lumi in Gradle or Maven, such as:
   - `repo.luminiadev.com`
+  - `repo.lumi.su` as an auxiliary repository hint alongside shared Nukkit markers
   - `com.koshakmine:lumi`
   - Maven coordinates containing `com.koshakmine` and `lumi`
 

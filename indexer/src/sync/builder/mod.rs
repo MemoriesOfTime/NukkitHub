@@ -311,8 +311,10 @@ fn detect_targets_from_build_content(
         "<groupid>com.koshakmine</groupid>",
         "<artifactid>lumi</artifactid>",
     ];
+    const LUMI_AUXILIARY_INDICATORS: &[&str] = &["repo.lumi.su"];
 
     let mut targets = BTreeSet::new();
+    let has_lumi_auxiliary_hint = contains_any(content_lower, LUMI_AUXILIARY_INDICATORS);
 
     if contains_any(content_lower, PNX_INDICATORS) {
         targets.insert("pnx");
@@ -332,6 +334,11 @@ fn detect_targets_from_build_content(
     }
 
     if content_lower.contains("cn.nukkit") {
+        // `repo.lumi.su` is a weak ecosystem hint. It only expands the generic
+        // `cn.nukkit` fallback instead of deciding the runtime on its own.
+        if has_lumi_auxiliary_hint {
+            targets.insert("lumi");
+        }
         targets.insert("nkx");
         targets.insert("nkmot");
         return (targets, DetectionConfidence::Medium);
@@ -909,6 +916,39 @@ mod tests {
         let (targets, confidence) = detect_targets_from_build_content(&pom.to_lowercase());
         assert_eq!(targets.into_iter().collect::<Vec<_>>(), vec!["lumi"]);
         assert_eq!(confidence.as_str(), "high");
+    }
+
+    #[test]
+    fn does_not_treat_repo_lumi_su_as_decisive_lumi_signal() {
+        let gradle = r#"
+            repositories {
+                maven { url = uri("https://repo.lumi.su/releases") }
+            }
+        "#;
+
+        let (targets, confidence) = detect_targets_from_build_content(&gradle.to_lowercase());
+        assert!(targets.is_empty());
+        assert_eq!(confidence.as_str(), "low");
+    }
+
+    #[test]
+    fn repo_lumi_su_extends_cn_nukkit_shared_targets_with_lumi() {
+        let gradle = r#"
+            repositories {
+                maven { url = uri("https://repo.lumi.su/releases") }
+            }
+
+            dependencies {
+                compileOnly("cn.nukkit:nukkit:1.0-SNAPSHOT")
+            }
+        "#;
+
+        let (targets, confidence) = detect_targets_from_build_content(&gradle.to_lowercase());
+        assert_eq!(
+            targets.into_iter().collect::<Vec<_>>(),
+            vec!["lumi", "nkmot", "nkx"]
+        );
+        assert_eq!(confidence.as_str(), "medium");
     }
 
     #[test]
