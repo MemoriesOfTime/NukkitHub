@@ -148,6 +148,11 @@ fn update_plugin(plugin: &Plugin, force: bool) -> Result<UpdateStatus, String> {
     merge_preserved_fields(plugin, &mut new_plugin);
     merge_gallery_created(plugin, &mut new_plugin);
 
+    // Preserve AI-classified categories when new build has none
+    if new_plugin.categories.is_empty() && !plugin.categories.is_empty() {
+        new_plugin.categories = plugin.categories.clone();
+    }
+
     if force || plugin_changed(plugin, &new_plugin) {
         Ok(UpdateStatus::Updated(Box::new(new_plugin)))
     } else {
