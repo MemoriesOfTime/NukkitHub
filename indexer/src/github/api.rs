@@ -21,11 +21,14 @@ const USER_AGENT: &str = concat!(
     env!("CARGO_PKG_VERSION"),
     " (+https://github.com/MemoriesOfTime/NukkitHub)"
 );
+const GITHUB_PAGE_SIZE: usize = 100;
+const MAX_GITHUB_PAGES: usize = 100;
 
 struct ResponseCache {
     repositories: HashMap<String, CacheEntry<Repository>>,
     trees: HashMap<String, CacheEntry<GitTree>>,
     releases: HashMap<String, CacheEntry<Vec<Release>>>,
+    contributors: HashMap<String, CacheEntry<Vec<Contributor>>>,
     raw_contents: HashMap<String, CacheEntry<String>>,
 }
 
@@ -35,6 +38,7 @@ impl ResponseCache {
             repositories: cache.repositories,
             trees: cache.trees,
             releases: cache.releases,
+            contributors: cache.contributors,
             raw_contents: cache.raw_contents,
         }
     }
@@ -44,6 +48,7 @@ impl ResponseCache {
             repositories: self.repositories.clone(),
             trees: self.trees.clone(),
             releases: self.releases.clone(),
+            contributors: self.contributors.clone(),
             raw_contents: self.raw_contents.clone(),
         }
     }
@@ -51,15 +56,31 @@ impl ResponseCache {
     fn clear_repository_related(&mut self, owner: &str, repo: &str) {
         let repo_key = format!("{}/{}", owner, repo);
         let readme_key = format!("readme/{}/{}", owner, repo);
+        let contributors_prefix = format!("{}/{}/contributors?", owner, repo);
         let content_prefix = format!("contents/{}/{}/", owner, repo);
         let tree_prefix = format!("{}/{}/", owner, repo);
 
         self.repositories.remove(&repo_key);
         self.releases.remove(&repo_key);
         self.trees.retain(|key, _| !key.starts_with(&tree_prefix));
+        self.contributors
+            .retain(|key, _| key != &repo_key && !key.starts_with(&contributors_prefix));
         self.raw_contents
             .retain(|key, _| key != &readme_key && !key.starts_with(&content_prefix));
     }
+}
+
+fn with_pagination(url: &str, page: usize, per_page: usize) -> String {
+    let separator = if url.contains('?') { '&' } else { '?' };
+    format!("{url}{separator}per_page={per_page}&page={page}")
+}
+
+fn repository_cache_key_from_url(url: &str) -> String {
+    url.trim()
+        .trim_start_matches(API_BASE)
+        .trim_start_matches('/')
+        .trim_start_matches("repos/")
+        .to_string()
 }
 
 fn is_missing_repository_error(error: &str) -> bool {
@@ -813,7 +834,65 @@ impl GitHubClient {
         if url.is_empty() {
             return Ok(Vec::new());
         }
-        self.request(url)
+
+        let mut contributors = Vec::new();
+
+        for page in 1..=MAX_GITHUB_PAGES {
+            let page_url = with_pagination(url, page, GITHUB_PAGE_SIZE);
+            let cache_key = repository_cache_key_from_url(&page_url);
+            let cached = {
+                let cache = self.cache.read().unwrap();
+                cache.contributors.get(&cache_key).cloned()
+            };
+
+            let etag = cached.as_ref().and_then(|e| e.etag.as_deref());
+
+            let page_contributors =
+                match self.request_with_etag::<Vec<Contributor>>(&page_url, etag) {
+                    Ok((data, new_etag)) => {
+                        let mut cache = self.cache.write().unwrap();
+                        cache.contributors.insert(
+                            cache_key.clone(),
+                            CacheEntry {
+                                data: data.clone(),
+                                etag: new_etag,
+                            },
+                        );
+                        data
+                    }
+                    Err(e) if e == "not_modified" => {
+                        debug!(key = %cache_key, "Cache hit (304)");
+                        cached
+                            .map(|entry| entry.data)
+                            .ok_or_else(|| "not_modified without cached contributors".to_string())?
+                    }
+                    Err(e) => {
+                        if let Some(entry) = cached {
+                            warn!(
+                                key = %cache_key,
+                                error = %e,
+                                "API failed, using cached contributors"
+                            );
+                            entry.data
+                        } else {
+                            return Err(e);
+                        }
+                    }
+                };
+            let page_count = page_contributors.len();
+
+            if page_count == 0 {
+                break;
+            }
+
+            contributors.extend(page_contributors);
+
+            if page_count < GITHUB_PAGE_SIZE {
+                break;
+            }
+        }
+
+        Ok(contributors)
     }
 
     pub fn execute_parallel<T, R, F>(&self, items: Vec<T>, handler: F) -> BatchResult<R>
@@ -1054,6 +1133,20 @@ mod tests {
             )]
             .into_iter()
             .collect(),
+            contributors: [(
+                "owner/repo/contributors?per_page=100&page=1".to_string(),
+                CacheEntry {
+                    data: vec![Contributor {
+                        login: "owner".to_string(),
+                        avatar_url: "https://example.com/avatar.png".to_string(),
+                        html_url: "https://github.com/owner".to_string(),
+                        contributions: 1,
+                    }],
+                    etag: Some("contributors-etag".to_string()),
+                },
+            )]
+            .into_iter()
+            .collect(),
             raw_contents: [
                 (
                     "readme/owner/repo".to_string(),
@@ -1079,6 +1172,7 @@ mod tests {
         assert!(cache.repositories.is_empty());
         assert!(cache.trees.is_empty());
         assert!(cache.releases.is_empty());
+        assert!(cache.contributors.is_empty());
         assert!(cache.raw_contents.is_empty());
     }
 
@@ -1113,6 +1207,7 @@ mod tests {
             .into_iter()
             .collect(),
             releases: HashMap::new(),
+            contributors: HashMap::new(),
             raw_contents: HashMap::new(),
         });
 
@@ -1120,6 +1215,86 @@ mod tests {
 
         assert!(!cache.trees.contains_key("owner/repo/main"));
         assert!(cache.trees.contains_key("owner/repo2/main"));
+    }
+
+    #[test]
+    fn only_evicts_contributor_cache_for_exact_repository_prefix() {
+        let mut cache = ResponseCache::from_data_cache(DataCache {
+            repositories: HashMap::new(),
+            trees: HashMap::new(),
+            releases: HashMap::new(),
+            contributors: [
+                (
+                    "owner/repo/contributors?per_page=100&page=1".to_string(),
+                    CacheEntry {
+                        data: vec![Contributor {
+                            login: "owner".to_string(),
+                            avatar_url: "https://example.com/avatar.png".to_string(),
+                            html_url: "https://github.com/owner".to_string(),
+                            contributions: 1,
+                        }],
+                        etag: Some("contributors-etag-1".to_string()),
+                    },
+                ),
+                (
+                    "owner/repo2/contributors?per_page=100&page=1".to_string(),
+                    CacheEntry {
+                        data: vec![Contributor {
+                            login: "owner".to_string(),
+                            avatar_url: "https://example.com/avatar.png".to_string(),
+                            html_url: "https://github.com/owner".to_string(),
+                            contributions: 1,
+                        }],
+                        etag: Some("contributors-etag-2".to_string()),
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            raw_contents: HashMap::new(),
+        });
+
+        cache.clear_repository_related("owner", "repo");
+
+        assert!(
+            !cache
+                .contributors
+                .contains_key("owner/repo/contributors?per_page=100&page=1")
+        );
+        assert!(
+            cache
+                .contributors
+                .contains_key("owner/repo2/contributors?per_page=100&page=1")
+        );
+    }
+
+    #[test]
+    fn exports_contributor_cache_entries() {
+        let mut cache = ResponseCache::from_data_cache(DataCache::default());
+        cache.contributors.insert(
+            "owner/repo/contributors?per_page=100&page=1".to_string(),
+            CacheEntry {
+                data: vec![Contributor {
+                    login: "owner".to_string(),
+                    avatar_url: "https://example.com/avatar.png".to_string(),
+                    html_url: "https://github.com/owner".to_string(),
+                    contributions: 1,
+                }],
+                etag: Some("contributors-etag".to_string()),
+            },
+        );
+
+        let exported = cache.to_data_cache();
+
+        assert_eq!(
+            exported
+                .contributors
+                .get("owner/repo/contributors?per_page=100&page=1")
+                .unwrap()
+                .etag
+                .as_deref(),
+            Some("contributors-etag")
+        );
     }
 }
 

@@ -217,6 +217,7 @@ declare namespace AllayIndex {
       id: string
       username: string
       avatar_url: string
+      profile_url?: string
     }
     role: string
     is_owner: boolean

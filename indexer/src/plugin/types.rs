@@ -132,11 +132,97 @@ pub struct Dependency {
     pub dependency_type: String,
 }
 
+fn repo_owner_from_id(id: &str) -> String {
+    id.split('/').next().unwrap_or(id).trim().to_string()
+}
+
+fn github_username_from_url(url: &str) -> Option<String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let rest = trimmed
+        .strip_prefix("https://github.com/")
+        .or_else(|| trimmed.strip_prefix("http://github.com/"))?;
+    let username = rest.split('/').next()?.trim();
+
+    if username.is_empty() {
+        None
+    } else {
+        Some(username.to_string())
+    }
+}
+
 impl Plugin {
     pub fn get_author_name(&self) -> String {
+        let owner = repo_owner_from_id(&self.id);
+        if !owner.is_empty()
+            && let Some(author) = self.authors.iter().find(|author| {
+                author.name.eq_ignore_ascii_case(&owner)
+                    || github_username_from_url(&author.url)
+                        .is_some_and(|username| username.eq_ignore_ascii_case(&owner))
+            })
+        {
+            return author.name.clone();
+        }
+
         self.authors
             .first()
             .map(|a| a.name.clone())
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Author, License, Plugin};
+
+    fn base_plugin() -> Plugin {
+        Plugin {
+            id: "owner/repo".to_string(),
+            name: "repo".to_string(),
+            source: String::new(),
+            targets: Vec::new(),
+            primary_target: String::new(),
+            manifest_path: String::new(),
+            detection_confidence: String::new(),
+            summary: String::new(),
+            description: String::new(),
+            authors: Vec::new(),
+            categories: Vec::new(),
+            license: License::default(),
+            links: None,
+            downloads: 0,
+            stars: 0,
+            created_at: 0,
+            updated_at: 0,
+            icon_url: String::new(),
+            gallery: Vec::new(),
+            versions: Vec::new(),
+            api_version: String::new(),
+            server_version: String::new(),
+            dependencies: Vec::new(),
+            preserved_fields: Default::default(),
+        }
+    }
+
+    #[test]
+    fn prefers_owner_author_over_first_contributor() {
+        let mut plugin = base_plugin();
+        plugin.authors = vec![
+            Author {
+                name: "top-contributor".to_string(),
+                url: "https://github.com/top-contributor".to_string(),
+                avatar_url: String::new(),
+            },
+            Author {
+                name: "owner".to_string(),
+                url: "https://github.com/owner".to_string(),
+                avatar_url: String::new(),
+            },
+        ];
+
+        assert_eq!(plugin.get_author_name(), "owner");
     }
 }

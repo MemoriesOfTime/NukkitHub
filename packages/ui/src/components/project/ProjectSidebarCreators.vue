@@ -31,7 +31,7 @@
         v-for="member in sortedMembers"
         :key="`member-${member.id}`"
         class="group flex w-fit items-center gap-2 leading-[1.2] text-primary"
-        :to="`https://github.com/${member.user.username}`"
+        :to="getMemberProfileUrl(member)"
       >
         <Avatar
           :src="member.user.avatar_url"
@@ -68,6 +68,7 @@ import AutoLink from '../base/AutoLink.vue'
 import Avatar from '../base/Avatar.vue'
 
 const { formatMessage } = useVIntl()
+const GITHUB_USERNAME_PATTERN = /^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/i
 
 type TeamMember = {
   id: string
@@ -78,6 +79,7 @@ type TeamMember = {
     id: string
     username: string
     avatar_url: string
+    profile_url?: string
   }
 }
 
@@ -121,6 +123,14 @@ const sortedMembers = computed(() => {
 
   return owner ? [owner, ...rest] : rest
 })
+
+function getMemberProfileUrl(member: TeamMember): string {
+  if (member.user.profile_url) return member.user.profile_url
+
+  return GITHUB_USERNAME_PATTERN.test(member.user.username)
+    ? `https://github.com/${member.user.username}`
+    : '#'
+}
 
 const messages = defineMessages({
   title: {

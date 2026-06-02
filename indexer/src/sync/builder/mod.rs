@@ -1,7 +1,7 @@
 mod image;
 mod link;
 
-use crate::github::{GitTreeEntry, Release, Repository, client};
+use crate::github::{Contributor, GitTreeEntry, Release, Repository, client};
 use crate::plugin::{
     Author, Dependency, GalleryItem, License, Links, Plugin, Version, VersionFile,
 };
@@ -511,6 +511,9 @@ pub fn build_plugins_from_nukkit_with_tree(
     let icon_url = find_logo_url(&tree, owner, repo_name, default_branch)
         .unwrap_or_else(|| repo.owner.avatar_url.clone());
     let repo_gallery = find_gallery_items(&tree, owner, repo_name, default_branch);
+    let contributors = client()
+        .get_contributors_by_url(&repo.contributors_url)
+        .unwrap_or_default();
 
     let is_multi_module = manifest_groups.len() > 1;
     let mut plugins = Vec::new();
@@ -550,6 +553,7 @@ pub fn build_plugins_from_nukkit_with_tree(
             owner,
             repo_name,
             default_branch,
+            &contributors,
             &icon_url,
             repo_gallery.clone(),
             &repo_categories,
@@ -571,6 +575,65 @@ fn is_placeholder(s: &str) -> bool {
         || (trimmed.starts_with('@') && trimmed.ends_with('@') && trimmed.len() > 2)
 }
 
+fn resolve_authors(
+    author_names: Vec<String>,
+    repo: &Repository,
+    contributors: &[Contributor],
+) -> Vec<Author> {
+    if !contributors.is_empty() {
+        let contributor_logins: BTreeSet<String> = contributors
+            .iter()
+            .map(|contributor| contributor.login.to_lowercase())
+            .collect();
+
+        let mut authors: Vec<Author> = contributors
+            .iter()
+            .map(|contributor| Author {
+                name: contributor.login.clone(),
+                url: contributor.html_url.clone(),
+                avatar_url: contributor.avatar_url.clone(),
+            })
+            .collect();
+
+        for name in author_names {
+            if contributor_logins.contains(&name.to_lowercase()) {
+                continue;
+            }
+
+            let (url, avatar_url) = if name.eq_ignore_ascii_case(&repo.owner.login) {
+                (repo.owner.html_url.clone(), repo.owner.avatar_url.clone())
+            } else {
+                (String::new(), String::new())
+            };
+
+            authors.push(Author {
+                name,
+                url,
+                avatar_url,
+            });
+        }
+
+        return authors;
+    }
+
+    author_names
+        .into_iter()
+        .map(|name| {
+            let (url, avatar_url) = if name.eq_ignore_ascii_case(&repo.owner.login) {
+                (repo.owner.html_url.clone(), repo.owner.avatar_url.clone())
+            } else {
+                (String::new(), String::new())
+            };
+
+            Author {
+                name,
+                url,
+                avatar_url,
+            }
+        })
+        .collect()
+}
+
 fn nukkit_yml_to_plugin(
     yml: crate::nukkit::NukkitPluginYml,
     repo: &Repository,
@@ -580,6 +643,7 @@ fn nukkit_yml_to_plugin(
     owner: &str,
     repo_name: &str,
     branch: &str,
+    contributors: &[Contributor],
     icon_url: &str,
     repo_gallery: Vec<GalleryItem>,
     categories: &[String],
@@ -596,15 +660,7 @@ fn nukkit_yml_to_plugin(
     let (processed_readme, mut gallery) = process_readme(readme, &ctx);
     gallery.extend(repo_gallery);
 
-    let authors = yml
-        .all_authors()
-        .into_iter()
-        .map(|name| Author {
-            name,
-            url: String::new(),
-            avatar_url: String::new(),
-        })
-        .collect();
+    let authors = resolve_authors(yml.all_authors(), repo, contributors);
 
     let mut all_dependencies: Vec<Dependency> = yml
         .depend
@@ -765,9 +821,9 @@ mod tests {
     use super::{
         build_plugin_id, categories_from_topics, combine_categories,
         detect_targets_from_build_content, group_manifest_paths, is_plugin_manifest_path,
-        parse_timestamp, project_updated_timestamp,
+        parse_timestamp, project_updated_timestamp, resolve_authors,
     };
-    use crate::github::{Owner, Release, Repository};
+    use crate::github::{Contributor, Owner, Release, Repository};
 
     fn repo_with_dates(updated_at: &str, pushed_at: &str) -> Repository {
         Repository {
@@ -808,6 +864,71 @@ mod tests {
             published_at: published_at.to_string(),
             assets: Vec::new(),
         }
+    }
+
+    #[test]
+    fn authors_use_matching_contributor_avatars() {
+        let repo = repo_with_dates("2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z");
+        let contributors = vec![Contributor {
+            login: "Alice".to_string(),
+            avatar_url: "https://avatars.githubusercontent.com/u/1?v=4".to_string(),
+            html_url: "https://github.com/Alice".to_string(),
+            contributions: 10,
+        }];
+
+        let authors = resolve_authors(vec!["Alice".to_string()], &repo, &contributors);
+
+        assert_eq!(authors[0].name, "Alice");
+        assert_eq!(authors[0].url, "https://github.com/Alice");
+        assert_eq!(
+            authors[0].avatar_url,
+            "https://avatars.githubusercontent.com/u/1?v=4"
+        );
+    }
+
+    #[test]
+    fn authors_fall_back_to_repository_owner_avatar_when_login_matches() {
+        let mut repo = repo_with_dates("2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z");
+        repo.owner.login = "owner".to_string();
+        repo.owner.avatar_url = "https://avatars.githubusercontent.com/u/2?v=4".to_string();
+        repo.owner.html_url = "https://github.com/owner".to_string();
+
+        let authors = resolve_authors(vec!["owner".to_string()], &repo, &[]);
+
+        assert_eq!(authors[0].url, "https://github.com/owner");
+        assert_eq!(
+            authors[0].avatar_url,
+            "https://avatars.githubusercontent.com/u/2?v=4"
+        );
+    }
+
+    #[test]
+    fn github_contributors_are_primary_over_manifest_names() {
+        let repo = repo_with_dates("2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z");
+        let contributors = vec![
+            Contributor {
+                login: "Alice".to_string(),
+                avatar_url: "https://avatars.githubusercontent.com/u/1?v=4".to_string(),
+                html_url: "https://github.com/Alice".to_string(),
+                contributions: 10,
+            },
+            Contributor {
+                login: "Bob".to_string(),
+                avatar_url: "https://avatars.githubusercontent.com/u/2?v=4".to_string(),
+                html_url: "https://github.com/Bob".to_string(),
+                contributions: 5,
+            },
+        ];
+
+        let authors = resolve_authors(
+            vec!["Display Name".to_string(), "Alice".to_string()],
+            &repo,
+            &contributors,
+        );
+
+        assert_eq!(authors[0].name, "Alice");
+        assert_eq!(authors[1].name, "Bob");
+        assert_eq!(authors[2].name, "Display Name");
     }
 
     #[test]

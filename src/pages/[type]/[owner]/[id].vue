@@ -757,7 +757,18 @@ function transformPluginToProject(
 ): AllayIndex.ProjectView | null {
   if (!plugin) return null
 
-  const authorId = plugin.authors[0]?.name || 'unknown'
+  const ownerLogin = getPluginOwner(plugin).toLowerCase()
+  const ownerAuthor = plugin.authors.find((author) => {
+    const githubUsername = getAuthorGitHubUsername(author)?.toLowerCase()
+    if (githubUsername === ownerLogin) return true
+
+    return getAuthorDisplayName(author).toLowerCase() === ownerLogin
+  })
+  const authorId =
+    getAuthorMemberId(ownerAuthor) ||
+    (ownerLogin ? ownerLogin : '') ||
+    getAuthorMemberId(plugin.authors[0]) ||
+    'unknown'
 
   return {
     id: plugin.id,
@@ -810,23 +821,63 @@ function getGitHubAvatarUrl(username: string | undefined): string | null {
   return `https://github.com/${trimmed}.png`
 }
 
+function getGitHubUsernameFromUrl(url: string | undefined): string | null {
+  const trimmed = url?.trim()
+  if (!trimmed) return null
+
+  try {
+    const parsedUrl = new URL(trimmed)
+    if (parsedUrl.hostname !== 'github.com') return null
+
+    const username = parsedUrl.pathname.split('/').filter(Boolean)[0]
+    return GITHUB_USERNAME_PATTERN.test(username) ? username : null
+  } catch {
+    return null
+  }
+}
+
 function getPluginOwner(plugin: AllayIndex.Plugin): string {
   return plugin.id.split('/')[0]?.trim() || ''
 }
 
-function getAuthorAvatarUrl(
-  plugin: AllayIndex.Plugin,
-  author: AllayIndex.Author,
-  index: number,
-): string {
+function getAuthorGitHubUsername(
+  author: AllayIndex.Author | undefined,
+): string | null {
+  const githubUsernameFromUrl = getGitHubUsernameFromUrl(author?.url)
+  if (githubUsernameFromUrl) return githubUsernameFromUrl
+
+  const trimmedName = author?.name?.trim()
+  return trimmedName && GITHUB_USERNAME_PATTERN.test(trimmedName)
+    ? trimmedName
+    : null
+}
+
+function getAuthorDisplayName(author: AllayIndex.Author | undefined): string {
+  return author?.name?.trim() || getAuthorGitHubUsername(author) || ''
+}
+
+function getAuthorProfileUrl(
+  author: AllayIndex.Author | undefined,
+): string | null {
+  const explicitUrl = author?.url?.trim()
+  if (getGitHubUsernameFromUrl(explicitUrl)) return explicitUrl ?? null
+
+  const githubUsername = getAuthorGitHubUsername(author)
+  return githubUsername ? `https://github.com/${githubUsername}` : null
+}
+
+function getAuthorMemberId(author: AllayIndex.Author | undefined): string {
+  return getAuthorGitHubUsername(author) || getAuthorDisplayName(author)
+}
+
+function getAuthorAvatarUrl(author: AllayIndex.Author): string {
   const explicitAvatar = author.avatar_url?.trim()
   if (explicitAvatar) return explicitAvatar
 
-  const ownerAvatar =
-    index === 0 ? getGitHubAvatarUrl(getPluginOwner(plugin)) : null
-  if (ownerAvatar) return ownerAvatar
-
-  return getGitHubAvatarUrl(author.name) || '/placeholder.svg'
+  return (
+    getGitHubAvatarUrl(getAuthorGitHubUsername(author) || undefined) ||
+    '/placeholder.svg'
+  )
 }
 
 function createMembersFromAuthors(
@@ -834,20 +885,32 @@ function createMembersFromAuthors(
 ): AllayIndex.MemberView[] {
   if (!plugin) return []
 
-  const normalizedAuthors = plugin.authors
-    .map((author, index) => ({
-      name: author.name?.trim() || '',
-      avatar_url: getAuthorAvatarUrl(plugin, author, index),
-    }))
-    .filter((author) => author.name.length > 0)
-
   const fallbackOwner = getPluginOwner(plugin)
-  if (normalizedAuthors.length === 0 && fallbackOwner) {
+  const normalizedAuthors = plugin.authors
+    .map((author) => ({
+      id: getAuthorMemberId(author),
+      name: getAuthorDisplayName(author),
+      profile_url: getAuthorProfileUrl(author),
+      github_username: getAuthorGitHubUsername(author),
+      avatar_url: getAuthorAvatarUrl(author),
+      is_owner:
+        getAuthorGitHubUsername(author)?.toLowerCase() ===
+          fallbackOwner.toLowerCase() ||
+        getAuthorDisplayName(author).toLowerCase() ===
+          fallbackOwner.toLowerCase(),
+    }))
+    .filter((author) => author.id.length > 0)
+
+  if (fallbackOwner && !normalizedAuthors.some((author) => author.is_owner)) {
     const fallbackAvatar =
-      getGitHubAvatarUrl(fallbackOwner) || plugin.icon_url || '/placeholder.svg'
-    normalizedAuthors.push({
+      getGitHubAvatarUrl(fallbackOwner) || '/placeholder.svg'
+    normalizedAuthors.unshift({
+      id: fallbackOwner,
       name: fallbackOwner,
+      profile_url: `https://github.com/${fallbackOwner}`,
+      github_username: fallbackOwner,
       avatar_url: fallbackAvatar,
+      is_owner: true,
     })
   }
 
@@ -855,15 +918,16 @@ function createMembersFromAuthors(
     id: `member-${plugin.id}-${index}`,
     team_id: `team-${plugin.id}`,
     user: {
-      id: `user-${index}`,
+      id: author.id,
       username: author.name,
       avatar_url: author.avatar_url,
+      profile_url: author.profile_url || undefined,
     },
-    role: index === 0 ? 'Owner' : 'Member',
-    is_owner: index === 0,
+    role: author.is_owner ? 'Owner' : 'Member',
+    is_owner: author.is_owner,
     accepted: true,
     permissions: 1023,
-    payouts_split: index === 0 ? 100 : 0,
+    payouts_split: author.is_owner ? 100 : 0,
   }))
 }
 

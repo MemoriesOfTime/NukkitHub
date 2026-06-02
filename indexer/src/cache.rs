@@ -1,4 +1,4 @@
-use crate::github::{GitTree, Release, Repository};
+use crate::github::{Contributor, GitTree, Release, Repository};
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
@@ -25,6 +25,8 @@ pub struct DataCache {
     pub trees: HashMap<String, CacheEntry<GitTree>>,
     #[serde(default)]
     pub releases: HashMap<String, CacheEntry<Vec<Release>>>,
+    #[serde(default)]
+    pub contributors: HashMap<String, CacheEntry<Vec<Contributor>>>,
     #[serde(default)]
     pub raw_contents: HashMap<String, CacheEntry<String>>,
 }
@@ -119,7 +121,11 @@ impl DataCache {
     }
 
     fn entry_count(&self) -> usize {
-        self.repositories.len() + self.trees.len() + self.releases.len() + self.raw_contents.len()
+        self.repositories.len()
+            + self.trees.len()
+            + self.releases.len()
+            + self.contributors.len()
+            + self.raw_contents.len()
     }
 }
 
@@ -145,6 +151,7 @@ mod tests {
         assert!(cache.repositories.is_empty());
         assert!(cache.trees.is_empty());
         assert!(cache.releases.is_empty());
+        assert!(cache.contributors.is_empty());
         assert!(cache.raw_contents.is_empty());
     }
 

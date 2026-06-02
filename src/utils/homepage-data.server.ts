@@ -1,5 +1,5 @@
-import {existsSync, readdirSync, readFileSync} from 'node:fs'
-import {join} from 'node:path'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 import type AllayIndex from '~/types/allayhub-index'
 
@@ -57,13 +57,39 @@ function normalizeSummary(summary: unknown): string {
   return isTemplatePlaceholder(value) ? '' : value
 }
 
+function getGitHubUsernameFromUrl(url: unknown): string {
+  if (typeof url !== 'string') return ''
+  const trimmed = url.trim()
+  if (!trimmed) return ''
+
+  try {
+    const parsedUrl = new URL(trimmed)
+    if (parsedUrl.hostname !== 'github.com') return ''
+    return parsedUrl.pathname.split('/').filter(Boolean)[0] || ''
+  } catch {
+    return ''
+  }
+}
+
 function normalizeAuthor(
   id: string,
   authors: AllayIndex.Author[] | undefined,
 ): string {
-  const value = authors?.[0]?.name?.trim() || ''
+  const owner = getRepoOwnerFromId(id).trim()
+  const ownerAuthor = authors?.find((author) => {
+    const name = author?.name?.trim() || ''
+    const githubUsername = getGitHubUsernameFromUrl(author?.url)
+    return (
+      name.localeCompare(owner, undefined, { sensitivity: 'accent' }) === 0 ||
+      githubUsername.localeCompare(owner, undefined, {
+        sensitivity: 'accent',
+      }) === 0
+    )
+  })
+
+  const value = ownerAuthor?.name?.trim() || authors?.[0]?.name?.trim() || ''
   if (!value || isTemplatePlaceholder(value)) {
-    return getRepoOwnerFromId(id)
+    return owner
   }
   return value
 }
