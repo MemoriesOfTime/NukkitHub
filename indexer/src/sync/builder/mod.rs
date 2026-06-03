@@ -610,18 +610,9 @@ fn is_placeholder(s: &str) -> bool {
         || (trimmed.starts_with('@') && trimmed.ends_with('@') && trimmed.len() > 2)
 }
 
-fn resolve_authors(
-    author_names: Vec<String>,
-    repo: &Repository,
-    contributors: &[Contributor],
-) -> Vec<Author> {
+fn resolve_authors(repo: &Repository, contributors: &[Contributor]) -> Vec<Author> {
     if !contributors.is_empty() {
-        let contributor_logins: BTreeSet<String> = contributors
-            .iter()
-            .map(|contributor| contributor.login.to_lowercase())
-            .collect();
-
-        let mut authors: Vec<Author> = contributors
+        return contributors
             .iter()
             .map(|contributor| Author {
                 name: contributor.login.clone(),
@@ -629,44 +620,13 @@ fn resolve_authors(
                 avatar_url: contributor.avatar_url.clone(),
             })
             .collect();
-
-        for name in author_names {
-            if contributor_logins.contains(&name.to_lowercase()) {
-                continue;
-            }
-
-            let (url, avatar_url) = if name.eq_ignore_ascii_case(&repo.owner.login) {
-                (repo.owner.html_url.clone(), repo.owner.avatar_url.clone())
-            } else {
-                (String::new(), String::new())
-            };
-
-            authors.push(Author {
-                name,
-                url,
-                avatar_url,
-            });
-        }
-
-        return authors;
     }
 
-    author_names
-        .into_iter()
-        .map(|name| {
-            let (url, avatar_url) = if name.eq_ignore_ascii_case(&repo.owner.login) {
-                (repo.owner.html_url.clone(), repo.owner.avatar_url.clone())
-            } else {
-                (String::new(), String::new())
-            };
-
-            Author {
-                name,
-                url,
-                avatar_url,
-            }
-        })
-        .collect()
+    vec![Author {
+        name: repo.owner.login.clone(),
+        url: repo.owner.html_url.clone(),
+        avatar_url: repo.owner.avatar_url.clone(),
+    }]
 }
 
 fn nukkit_yml_to_plugin(
@@ -695,7 +655,7 @@ fn nukkit_yml_to_plugin(
     let (processed_readme, mut gallery) = process_readme(readme, &ctx);
     gallery.extend(repo_gallery);
 
-    let authors = resolve_authors(yml.all_authors(), repo, contributors);
+    let authors = resolve_authors(repo, contributors);
 
     let mut all_dependencies: Vec<Dependency> = yml
         .depend
@@ -923,7 +883,7 @@ mod tests {
             contributions: 10,
         }];
 
-        let authors = resolve_authors(vec!["Alice".to_string()], &repo, &contributors);
+        let authors = resolve_authors(&repo, &contributors);
 
         assert_eq!(authors[0].name, "Alice");
         assert_eq!(authors[0].url, "https://github.com/Alice");
@@ -934,14 +894,15 @@ mod tests {
     }
 
     #[test]
-    fn authors_fall_back_to_repository_owner_avatar_when_login_matches() {
+    fn authors_fall_back_to_repository_owner_when_contributors_are_empty() {
         let mut repo = repo_with_dates("2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z");
         repo.owner.login = "owner".to_string();
         repo.owner.avatar_url = "https://avatars.githubusercontent.com/u/2?v=4".to_string();
         repo.owner.html_url = "https://github.com/owner".to_string();
 
-        let authors = resolve_authors(vec!["owner".to_string()], &repo, &[]);
+        let authors = resolve_authors(&repo, &[]);
 
+        assert_eq!(authors[0].name, "owner");
         assert_eq!(authors[0].url, "https://github.com/owner");
         assert_eq!(
             authors[0].avatar_url,
@@ -950,7 +911,7 @@ mod tests {
     }
 
     #[test]
-    fn github_contributors_are_primary_over_manifest_names() {
+    fn manifest_authors_are_ignored_when_github_contributors_exist() {
         let repo = repo_with_dates("2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z");
         let contributors = vec![
             Contributor {
@@ -967,15 +928,11 @@ mod tests {
             },
         ];
 
-        let authors = resolve_authors(
-            vec!["Display Name".to_string(), "Alice".to_string()],
-            &repo,
-            &contributors,
-        );
+        let authors = resolve_authors(&repo, &contributors);
 
         assert_eq!(authors[0].name, "Alice");
         assert_eq!(authors[1].name, "Bob");
-        assert_eq!(authors[2].name, "Display Name");
+        assert_eq!(authors.len(), 2);
     }
 
     #[test]

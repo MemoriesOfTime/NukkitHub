@@ -100,7 +100,6 @@ name: MyNukkitPlugin
 version: 1.0.0
 main: com.example.MyNukkitPlugin
 api: ['1.0.0']
-authors: ['AuthorName']
 description: A short description of my plugin
 website: https://example.com
 depend: []
@@ -115,11 +114,12 @@ softdepend: []
 | `version`     | Yes      | Plugin version           |
 | `main`        | Yes      | Main class path          |
 | `api`         | Yes      | Supported API version(s) |
-| `authors`     | No       | Author list              |
 | `description` | No       | Short summary            |
 | `website`     | No       | Homepage URL             |
 | `depend`      | No       | Required dependencies    |
 | `softdepend`  | No       | Optional dependencies    |
+
+Authors are indexed from GitHub contributors. If no contributors are available, the repository owner is used.
 
 ## Multi-Module Repositories
 
