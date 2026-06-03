@@ -2962,5 +2962,185 @@
   },
   "layout.footer.allayhub-information": {
     "message": "NukkitHub 信息"
+  },
+  "indexing-guide.badge.optional": {
+    "message": "可选"
+  },
+  "indexing-guide.badge.recommended": {
+    "message": "推荐"
+  },
+  "indexing-guide.badge.required": {
+    "message": "必需"
+  },
+  "indexing-guide.checklist.indexable.description": {
+    "message": "不要归档仓库，不要将仓库标记为模板，也不要添加 `noindex` topic。"
+  },
+  "indexing-guide.checklist.indexable.title": {
+    "message": "保持仓库可被索引"
+  },
+  "indexing-guide.checklist.manifest-path.description": {
+    "message": "使用 `src/main/resources/plugin.yml`；若以 PowerNukkitX 为主，则可使用 `src/main/resources/powernukkitx.yml`。"
+  },
+  "indexing-guide.checklist.manifest-path.title": {
+    "message": "将清单文件放在标准路径中"
+  },
+  "indexing-guide.checklist.metadata.description": {
+    "message": "清晰的 `plugin.yml`、README、图标和分类信息，能让项目在收录后展示得更完整。"
+  },
+  "indexing-guide.checklist.metadata.title": {
+    "message": "完善元数据与 README"
+  },
+  "indexing-guide.checklist.public-repo.description": {
+    "message": "私有仓库不会被索引。请保持仓库公开且可访问。"
+  },
+  "indexing-guide.checklist.public-repo.title": {
+    "message": "使用公开的 GitHub 仓库"
+  },
+  "indexing-guide.checklist.releases.description": {
+    "message": "项目即使没有 Release 也能被收录，但只有附带 `.jar` 文件的 GitHub Releases 才会显示为可下载版本。"
+  },
+  "indexing-guide.checklist.releases.title": {
+    "message": "为可下载版本发布 GitHub Releases"
+  },
+  "indexing-guide.checklist.topic.description": {
+    "message": "比起单纯依赖 GitHub 代码索引，topic 能让你的插件更快也更稳定地被发现。"
+  },
+  "indexing-guide.checklist.topic.title": {
+    "message": "为核心实现添加正确的 topic"
+  },
+  "indexing-guide.core.lumi.action.1": {
+    "message": "在 Gradle 或 Maven 中显式引用 Lumi，例如 `com.koshakmine:lumi`。"
+  },
+  "indexing-guide.core.lumi.action.2": {
+    "message": "如果你使用 Maven，请在 `pom.xml` 中保留 `com.koshakmine` 与 `lumi` 相关坐标，便于目标运行时被识别。"
+  },
+  "indexing-guide.core.lumi.note": {
+    "message": "对于 Lumi 项目，`lumi-plugin` topic 加上明确的 Lumi 依赖坐标是最稳妥的组合。"
+  },
+  "indexing-guide.core.lumi.title": {
+    "message": "Lumi 插件"
+  },
+  "indexing-guide.core.nkmot.action.1": {
+    "message": "使用 Nukkit-MOT 相关依赖名称或仓库标识，例如 `memoriesoftime` 或 `nukkit-mot`。"
+  },
+  "indexing-guide.core.nkmot.action.2": {
+    "message": "如果插件同时支持 NukkitX 与 Nukkit-MOT，通用的 `cn.nukkit:*` 依赖依然可以作为兼容信号。"
+  },
+  "indexing-guide.core.nkmot.note": {
+    "message": "MOTCI 不会提交仓库进入索引。你的插件仍然需要能从 GitHub 被发现。"
+  },
+  "indexing-guide.core.nkmot.title": {
+    "message": "Nukkit-MOT 插件"
+  },
+  "indexing-guide.core.nkx.action.1": {
+    "message": "使用 NukkitX 相关运行时依赖或明显的仓库标识，例如 `cloudburstmc` 或 `repo.nukkitx.com`。"
+  },
+  "indexing-guide.core.nkx.action.2": {
+    "message": "如果你的插件同时面向 NukkitX 与 Nukkit-MOT，通用的 `cn.nukkit:*` 依赖也是可接受的。"
+  },
+  "indexing-guide.core.nkx.note": {
+    "message": "如果你希望同时兼容 Nukkit-MOT，`nukkit-plugin` topic 加 `cn.nukkit:*` 通常就足够。"
+  },
+  "indexing-guide.core.nkx.title": {
+    "message": "NukkitX 插件"
+  },
+  "indexing-guide.core.pnx.action.1": {
+    "message": "使用 PowerNukkitX 相关依赖，例如 `cn.powernukkitx`。"
+  },
+  "indexing-guide.core.pnx.action.2": {
+    "message": "如果你必须继续使用 `plugin.yml`，请确保构建文件中清晰引用 PowerNukkitX，以便项目被正确分类。"
+  },
+  "indexing-guide.core.pnx.manifest": {
+    "message": "`src/main/resources/powernukkitx.yml`（推荐）"
+  },
+  "indexing-guide.core.pnx.note": {
+    "message": "使用 `powernukkitx.yml` 是让 PowerNukkitX 模块可被索引的最明确方式。"
+  },
+  "indexing-guide.core.pnx.title": {
+    "message": "PowerNukkitX 插件"
+  },
+  "indexing-guide.developer-description": {
+    "message": "为希望将项目收录到 NukkitHub 的插件开发者准备的一份实用检查清单。"
+  },
+  "indexing-guide.developer-title": {
+    "message": "让你的插件被收录"
+  },
+  "indexing-guide.hero-callout": {
+    "message": "最快的路径很简单：公开的 GitHub 仓库、正确的清单路径、匹配的 topic，以及与运行时对应的依赖配置。"
+  },
+  "indexing-guide.hero-eyebrow": {
+    "message": "面向插件开发者"
+  },
+  "indexing-guide.loading": {
+    "message": "正在渲染收录指南..."
+  },
+  "indexing-guide.pitfall.manifest-location.description": {
+    "message": "如果清单文件不在 `src/main/resources/` 下，仓库就很容易被遗漏。"
+  },
+  "indexing-guide.pitfall.manifest-location.title": {
+    "message": "清单文件路径错误"
+  },
+  "indexing-guide.pitfall.missing-signal.description": {
+    "message": "仅有清单文件并不一定足以完成运行时分类。请添加与你目标核心实现匹配的 topic。"
+  },
+  "indexing-guide.pitfall.missing-signal.title": {
+    "message": "缺少匹配的 topic 或核心信号"
+  },
+  "indexing-guide.pitfall.motci.description": {
+    "message": "MOTCI 不是项目发现来源。开发者仍需提供符合规范的 GitHub 仓库结构和 GitHub topics。"
+  },
+  "indexing-guide.pitfall.motci.title": {
+    "message": "只依赖 MOTCI"
+  },
+  "indexing-guide.pitfall.repository-state.description": {
+    "message": "这些状态都会阻止项目被索引，或让项目被移出索引。"
+  },
+  "indexing-guide.pitfall.repository-state.title": {
+    "message": "仓库被归档、设为模板或带有 `noindex`"
+  },
+  "indexing-guide.render-failed": {
+    "message": "收录指南内容渲染失败。"
+  },
+  "indexing-guide.section.checklist.description": {
+    "message": "如果你的仓库符合这份清单，通常无需额外人工处理就有较高概率被收录。"
+  },
+  "indexing-guide.section.checklist.heading": {
+    "message": "先完成这些"
+  },
+  "indexing-guide.section.checklist.kicker": {
+    "message": "快速检查清单"
+  },
+  "indexing-guide.section.core.description": {
+    "message": "选择与你目标运行时一致的卡片，并按照对应方案配置。你不需要理解内部检测细节，也能完成收录。"
+  },
+  "indexing-guide.section.core.heading": {
+    "message": "各运行时需要补充什么"
+  },
+  "indexing-guide.section.core.kicker": {
+    "message": "选择你的核心实现"
+  },
+  "indexing-guide.section.core.meta.manifest": {
+    "message": "清单文件"
+  },
+  "indexing-guide.section.core.meta.topics": {
+    "message": "Topics"
+  },
+  "indexing-guide.section.core.selector-aria": {
+    "message": "运行时选择器"
+  },
+  "indexing-guide.section.full-guide.description": {
+    "message": "下方完整文档集中保留了所有实用细节，包括清单示例、版本、图标与排障说明。"
+  },
+  "indexing-guide.section.full-guide.heading": {
+    "message": "详细清单与示例"
+  },
+  "indexing-guide.section.full-guide.kicker": {
+    "message": "完整指南"
+  },
+  "indexing-guide.section.pitfalls.heading": {
+    "message": "插件未被收录的常见原因"
+  },
+  "indexing-guide.section.pitfalls.kicker": {
+    "message": "避免这些错误"
   }
 }

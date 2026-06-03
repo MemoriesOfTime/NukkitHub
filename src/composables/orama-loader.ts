@@ -109,12 +109,16 @@ interface OramaCache {
   loading: Promise<PluginSearchDB> | null
 }
 
+type OramaGlobalThis = typeof globalThis & {
+  [CACHE_KEY]?: OramaCache
+}
+
 function getCache(): OramaCache {
-  const globalCache = globalThis as Record<string, OramaCache | undefined>
+  const globalCache = globalThis as OramaGlobalThis
   if (!globalCache[CACHE_KEY]) {
     globalCache[CACHE_KEY] = { db: null, loading: null }
   }
-  return globalCache[CACHE_KEY] as OramaCache
+  return globalCache[CACHE_KEY]
 }
 
 /**
