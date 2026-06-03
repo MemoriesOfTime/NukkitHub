@@ -180,6 +180,7 @@ async function renderGuideHtml(): Promise<string> {
 const { data: renderedGuideHtml, status: renderedGuideStatus } =
   await useAsyncData<string>('indexing-guide-html', renderGuideHtml, {
     default: () => '',
+    lazy: true,
   })
 
 const guideHtml = computed(() => renderedGuideHtml.value || '')

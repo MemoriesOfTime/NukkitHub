@@ -75,7 +75,7 @@
             </nuxt-link>
           </ButtonStyled>
           <ButtonStyled type="transparent">
-            <nuxt-link to="/indexing-guide">
+            <nuxt-link to="/indexing-guide" prefetch-on="interaction">
               <BookTextIcon aria-hidden="true" />
               <span class="hidden md:contents">{{
                 formatMessage(navMenuMessages.indexingGuide)
@@ -122,7 +122,11 @@
         @focusout="isMobileMenuOpen = false"
       >
         <div class="links">
-          <NuxtLink class="iconified-button" to="/indexing-guide">
+          <NuxtLink
+            class="iconified-button"
+            to="/indexing-guide"
+            prefetch-on="interaction"
+          >
             <BookTextIcon aria-hidden="true" />
             {{ formatMessage(navMenuMessages.indexingGuide) }}
           </NuxtLink>
@@ -173,12 +177,26 @@
   </div>
 </template>
 <script setup>
-import {BookTextIcon, HomeIcon, MoonIcon, PlugIcon, SearchIcon, SettingsIcon, SunIcon,} from '@modrinth/assets'
-import {ButtonStyled, commonMessages, commonProjectTypeCategoryMessages, defineMessages, useVIntl,} from '@modrinth/ui'
+import {
+  BookTextIcon,
+  HomeIcon,
+  MoonIcon,
+  PlugIcon,
+  SearchIcon,
+  SettingsIcon,
+  SunIcon,
+} from '@modrinth/assets'
+import {
+  ButtonStyled,
+  commonMessages,
+  commonProjectTypeCategoryMessages,
+  defineMessages,
+  useVIntl,
+} from '@modrinth/ui'
 
 import TextLogo from '~/components/brand/TextLogo.vue'
 import ModrinthFooter from '~/components/ui/ModrinthFooter.vue'
-import {getProjectTypeMessage} from '~/utils/i18n-project-type.ts'
+import { getProjectTypeMessage } from '~/utils/i18n-project-type.ts'
 
 const { formatMessage } = useVIntl()
 
