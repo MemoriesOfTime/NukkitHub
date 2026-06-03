@@ -58,6 +58,27 @@ pub const TARGET_IDS: &[&str] = &["nkx", "nkmot", "pnx", "lumi"];
 
 const MANIFEST_FILENAMES: &[&str] = &["plugin.yml", "powernukkitx.yml"];
 
+#[derive(Debug, Clone, Copy)]
+pub struct BuildOptions {
+    pub allow_ai_categories: bool,
+}
+
+impl BuildOptions {
+    pub fn without_ai_categories() -> Self {
+        Self {
+            allow_ai_categories: false,
+        }
+    }
+}
+
+impl Default for BuildOptions {
+    fn default() -> Self {
+        Self {
+            allow_ai_categories: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum DetectionConfidence {
     Low,
@@ -458,6 +479,20 @@ pub fn build_plugins_from_nukkit_with_tree(
     manifest_paths: &[String],
     prefetched_tree: Option<Vec<GitTreeEntry>>,
 ) -> Vec<Plugin> {
+    build_plugins_from_nukkit_with_tree_options(
+        repo,
+        manifest_paths,
+        prefetched_tree,
+        BuildOptions::default(),
+    )
+}
+
+pub fn build_plugins_from_nukkit_with_tree_options(
+    repo: &Repository,
+    manifest_paths: &[String],
+    prefetched_tree: Option<Vec<GitTreeEntry>>,
+    options: BuildOptions,
+) -> Vec<Plugin> {
     let (owner, repo_name) = match repo.full_name.split_once('/') {
         Some((o, r)) => (o, r),
         None => {
@@ -478,7 +513,7 @@ pub fn build_plugins_from_nukkit_with_tree(
 
     let releases = client().get_releases(owner, repo_name).unwrap_or_default();
     let readme = client().get_readme(owner, repo_name).unwrap_or_default();
-    let repo_categories = detect_categories(repo, &readme);
+    let repo_categories = detect_categories(repo, &readme, options);
 
     let license = repo.license.as_ref().map_or_else(
         || License {
@@ -782,11 +817,23 @@ fn nukkit_yml_to_plugin(
     })
 }
 
-fn detect_categories(repo: &Repository, readme: &str) -> Vec<String> {
+fn detect_categories(repo: &Repository, readme: &str, options: BuildOptions) -> Vec<String> {
+    detect_categories_with_classifier(repo, readme, options, crate::ai::classify_readme_categories)
+}
+
+fn detect_categories_with_classifier<F>(
+    repo: &Repository,
+    readme: &str,
+    options: BuildOptions,
+    classify_readme_categories: F,
+) -> Vec<String>
+where
+    F: FnOnce(&str, &[&str]) -> Vec<String>,
+{
     let topic_categories = categories_from_topics(&repo.topics);
 
-    if crate::ai::category_classification_enabled() {
-        let ai_categories = crate::ai::classify_readme_categories(readme, CATEGORIES);
+    if options.allow_ai_categories && crate::ai::category_classification_enabled() {
+        let ai_categories = classify_readme_categories(readme, CATEGORIES);
         return combine_categories(topic_categories, ai_categories);
     }
 
@@ -819,9 +866,9 @@ fn combine_categories(topic_categories: Vec<String>, ai_categories: Vec<String>)
 #[cfg(test)]
 mod tests {
     use super::{
-        build_plugin_id, categories_from_topics, combine_categories,
-        detect_targets_from_build_content, group_manifest_paths, is_plugin_manifest_path,
-        parse_timestamp, project_updated_timestamp, resolve_authors,
+        BuildOptions, build_plugin_id, categories_from_topics, combine_categories,
+        detect_categories_with_classifier, detect_targets_from_build_content, group_manifest_paths,
+        is_plugin_manifest_path, parse_timestamp, project_updated_timestamp, resolve_authors,
     };
     use crate::github::{Contributor, Owner, Release, Repository};
 
@@ -1138,6 +1185,21 @@ mod tests {
         );
 
         assert_eq!(categories, vec!["economy", "utility", "management"]);
+    }
+
+    #[test]
+    fn disabled_category_classification_uses_topics_without_calling_ai() {
+        let mut repo = repo_with_dates("2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z");
+        repo.topics = vec!["nukkit-economy".to_string()];
+
+        let categories = detect_categories_with_classifier(
+            &repo,
+            "README",
+            BuildOptions::without_ai_categories(),
+            |_, _| panic!("AI classifier should not be called for update builds"),
+        );
+
+        assert_eq!(categories, vec!["economy"]);
     }
 
     #[test]

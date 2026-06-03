@@ -1,4 +1,6 @@
-use super::builder::{build_plugins_from_nukkit_with_tree, find_plugin_manifest_paths};
+use super::builder::{
+    BuildOptions, build_plugins_from_nukkit_with_tree_options, find_plugin_manifest_paths,
+};
 use crate::github::client;
 use crate::plugin::Plugin;
 use std::collections::{HashMap, HashSet};
@@ -104,7 +106,7 @@ fn update_plugin(plugin: &Plugin, force: bool) -> Result<UpdateStatus, String> {
             }
         };
 
-    let repo = match client().get_repository(&owner, &repo_name) {
+    let repo = match client().get_repository(owner, repo_name) {
         Ok(r) => r,
         Err(e) if is_missing_repo_error(&e) => {
             debug!(id = %plugin.id, "Plugin repo not found, marking deleted");
@@ -143,7 +145,12 @@ fn update_plugin(plugin: &Plugin, force: bool) -> Result<UpdateStatus, String> {
         return Ok(UpdateStatus::Deleted);
     }
 
-    let new_plugins = build_plugins_from_nukkit_with_tree(&repo, &manifest_paths, Some(tree));
+    let new_plugins = build_plugins_from_nukkit_with_tree_options(
+        &repo,
+        &manifest_paths,
+        Some(tree),
+        BuildOptions::without_ai_categories(),
+    );
 
     let new_plugin = new_plugins.into_iter().find(|p| p.id == plugin.id);
 
@@ -157,12 +164,17 @@ fn update_plugin(plugin: &Plugin, force: bool) -> Result<UpdateStatus, String> {
 
     merge_preserved_fields(plugin, &mut new_plugin);
     merge_gallery_created(plugin, &mut new_plugin);
+    merge_preserved_categories(plugin, &mut new_plugin);
 
     if force || plugin_changed(plugin, &new_plugin) {
         Ok(UpdateStatus::Updated(Box::new(new_plugin)))
     } else {
         Ok(UpdateStatus::Unchanged)
     }
+}
+
+fn merge_preserved_categories(old: &Plugin, new: &mut Plugin) {
+    new.categories = old.categories.clone();
 }
 
 fn merge_preserved_fields(old: &Plugin, new: &mut Plugin) {
@@ -238,7 +250,8 @@ fn versions_changed(old: &[crate::plugin::Version], new: &[crate::plugin::Versio
 #[cfg(test)]
 mod tests {
     use super::{
-        UpdateStatus, is_missing_repo_error, plugin_changed, should_mark_update_processed,
+        UpdateStatus, is_missing_repo_error, merge_preserved_categories, plugin_changed,
+        should_mark_update_processed,
     };
     use crate::plugin::Plugin;
 
@@ -270,6 +283,19 @@ mod tests {
         new.categories = vec!["economy".to_string()];
 
         assert!(plugin_changed(&old, &new));
+    }
+
+    #[test]
+    fn update_preserves_existing_categories() {
+        let mut old = plugin_with_updated_at(1_612_325_106);
+        old.categories = vec!["economy".to_string(), "management".to_string()];
+
+        let mut new = plugin_with_updated_at(1_612_325_106);
+        new.categories = vec!["utility".to_string()];
+
+        merge_preserved_categories(&old, &mut new);
+
+        assert_eq!(new.categories, old.categories);
     }
 
     #[test]
