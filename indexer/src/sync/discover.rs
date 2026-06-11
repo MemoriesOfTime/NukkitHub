@@ -297,8 +297,12 @@ fn collect_repo_matches_incremental(
     let mut rate_limited = false;
     let mut complete = true;
 
+    // Code search does not support the `pushed:` qualifier, so we always
+    // perform a full search. The `existing_repos` filter ensures we skip
+    // already-known repositories; incremental filtering is handled by the
+    // repository search channel which *does* support `pushed:`.
     let code_collect =
-        collect_repo_matches_by_code_queries(CODE_SEARCH_QUERIES, existing_repos, Some(since));
+        collect_repo_matches_by_code_queries(CODE_SEARCH_QUERIES, existing_repos);
     merge_collect_result(&mut matches, &mut rate_limited, &mut complete, code_collect);
 
     let topic_collect = collect_repo_matches_by_repository_queries(
@@ -339,8 +343,9 @@ fn collect_repo_matches_full(existing_repos: &HashSet<String>) -> CollectResult 
     let mut rate_limited = false;
     let mut complete = true;
 
+    // Code search does not support the `pushed:` qualifier — always full scan.
     let code_collect =
-        collect_repo_matches_by_code_queries(CODE_SEARCH_QUERIES, existing_repos, None);
+        collect_repo_matches_by_code_queries(CODE_SEARCH_QUERIES, existing_repos);
     merge_collect_result(&mut matches, &mut rate_limited, &mut complete, code_collect);
 
     let topic_collect =
@@ -377,14 +382,13 @@ fn collect_repo_matches_full(existing_repos: &HashSet<String>) -> CollectResult 
 fn collect_repo_matches_by_code_queries(
     queries: &[&str],
     existing_repos: &HashSet<String>,
-    since: Option<&str>,
 ) -> CollectResult {
     let mut matches = Vec::new();
     let mut rate_limited = false;
     let mut complete = true;
 
     for query in queries {
-        let collect = collect_repo_matches_for_code_query(query, existing_repos, since);
+        let collect = collect_repo_matches_for_code_query(query, existing_repos);
         merge_collect_result(&mut matches, &mut rate_limited, &mut complete, collect);
     }
 
@@ -397,197 +401,28 @@ fn collect_repo_matches_by_code_queries(
     }
 }
 
+/// Code search does not support the `pushed:` qualifier, so neither
+/// incremental filtering nor date-based sharding can be applied. We
+/// simply execute the query and accept the result; if it exceeds GitHub's
+/// 1000-result limit we mark the collection as incomplete.
 fn collect_repo_matches_for_code_query(
     query: &str,
     existing_repos: &HashSet<String>,
-    since: Option<&str>,
 ) -> CollectResult {
-    if let Some(since) = since {
-        let incremental_query = pushed_after_query(query, since);
-        match collect_repo_matches_from_code_search(&incremental_query, existing_repos) {
-            Ok(collect) => collect,
-            Err(total) => {
-                info!(
-                    total = total,
-                    query = %query,
-                    since = %since,
-                    "Incremental code query truncated, using month shards"
-                );
-                let since_date = match parse_sync_date(since) {
-                    Some(date) => date,
-                    None => {
-                        warn!(since = %since, query = %query, "Invalid since date, skipping code query");
-                        return CollectResult {
-                            matches: Vec::new(),
-                            rate_limited: false,
-                            complete: false,
-                        };
-                    }
-                };
-                collect_repo_matches_by_code_month(
-                    query,
-                    existing_repos,
-                    since_date,
-                    Utc::now().date_naive(),
-                )
+    match collect_repo_matches_from_code_search(query, existing_repos) {
+        Ok(collect) => collect,
+        Err(total) => {
+            warn!(
+                total = total,
+                query = %query,
+                "Code search exceeds 1000 results; pushed: qualifier not supported for code search"
+            );
+            CollectResult {
+                matches: Vec::new(),
+                rate_limited: false,
+                complete: false,
             }
         }
-    } else {
-        match collect_repo_matches_from_code_search(query, existing_repos) {
-            Ok(collect) => collect,
-            Err(total) => {
-                info!(
-                    total = total,
-                    query = %query,
-                    "Code query exceeds 1000 results, using year-based sharding"
-                );
-                collect_repo_matches_by_code_year(query, existing_repos)
-            }
-        }
-    }
-}
-
-fn collect_repo_matches_by_code_year(
-    query: &str,
-    existing_repos: &HashSet<String>,
-) -> CollectResult {
-    let today = Utc::now().date_naive();
-    let current_year = today.year();
-    let mut matches = Vec::new();
-    let mut rate_limited = false;
-    let mut complete = true;
-
-    for year in START_YEAR..=current_year {
-        let start = match NaiveDate::from_ymd_opt(year, 1, 1) {
-            Some(date) => date,
-            None => continue,
-        };
-        let end = if year == current_year {
-            today
-        } else {
-            match NaiveDate::from_ymd_opt(year, 12, 31) {
-                Some(date) => date,
-                None => continue,
-            }
-        };
-
-        let _span = debug_span!("search_code_year", year = year).entered();
-        let year_query = pushed_range_query(query, start, end);
-        match collect_repo_matches_from_code_search(&year_query, existing_repos) {
-            Ok(collect) => {
-                merge_collect_result(&mut matches, &mut rate_limited, &mut complete, collect)
-            }
-            Err(total) => {
-                info!(
-                    year = year,
-                    total = total,
-                    query = %query,
-                    "Code year shard exceeds 1000 results, using month-based sharding"
-                );
-                let month_collect =
-                    collect_repo_matches_by_code_month(query, existing_repos, start, end);
-                merge_collect_result(
-                    &mut matches,
-                    &mut rate_limited,
-                    &mut complete,
-                    month_collect,
-                );
-            }
-        }
-    }
-
-    CollectResult {
-        matches,
-        rate_limited,
-        complete,
-    }
-}
-
-fn collect_repo_matches_by_code_month(
-    query: &str,
-    existing_repos: &HashSet<String>,
-    start: NaiveDate,
-    end: NaiveDate,
-) -> CollectResult {
-    let mut matches = Vec::new();
-    let mut rate_limited = false;
-    let mut complete = true;
-    let mut cursor = start;
-
-    while cursor <= end {
-        let month_start = cursor;
-        let month_end = last_day_of_month(cursor).min(end);
-        let month_query = pushed_range_query(query, month_start, month_end);
-
-        let _span = debug_span!(
-            "search_code_month",
-            year = month_start.year(),
-            month = month_start.month()
-        )
-        .entered();
-        match collect_repo_matches_from_code_search(&month_query, existing_repos) {
-            Ok(collect) => {
-                merge_collect_result(&mut matches, &mut rate_limited, &mut complete, collect)
-            }
-            Err(total) => {
-                info!(
-                    year = month_start.year(),
-                    month = month_start.month(),
-                    total = total,
-                    query = %query,
-                    "Code month shard exceeds 1000 results, using day-based sharding"
-                );
-                let day_collect =
-                    collect_repo_matches_by_code_day(query, existing_repos, month_start, month_end);
-                merge_collect_result(&mut matches, &mut rate_limited, &mut complete, day_collect);
-            }
-        }
-
-        cursor = month_end + Duration::days(1);
-    }
-
-    CollectResult {
-        matches,
-        rate_limited,
-        complete,
-    }
-}
-
-fn collect_repo_matches_by_code_day(
-    query: &str,
-    existing_repos: &HashSet<String>,
-    start: NaiveDate,
-    end: NaiveDate,
-) -> CollectResult {
-    let mut matches = Vec::new();
-    let mut rate_limited = false;
-    let mut complete = true;
-    let mut cursor = start;
-
-    while cursor <= end {
-        let day_query = pushed_range_query(query, cursor, cursor);
-        let _span = debug_span!("search_code_day", date = %cursor).entered();
-        match collect_repo_matches_from_code_search(&day_query, existing_repos) {
-            Ok(collect) => {
-                merge_collect_result(&mut matches, &mut rate_limited, &mut complete, collect)
-            }
-            Err(total) => {
-                complete = false;
-                warn!(
-                    date = %cursor,
-                    total = total,
-                    query = %query,
-                    "Code day shard exceeds 1000 results, skipping shard"
-                );
-            }
-        }
-        cursor += Duration::days(1);
-    }
-
-    CollectResult {
-        matches,
-        rate_limited,
-        complete,
     }
 }
 
