@@ -81,7 +81,7 @@
     "iso-3166-2": "1.0.0",
     "js-yaml": "^4.1.1",
     "jszip": "^3.10.1",
-    "markdown-it": "14.1.1",
+    "markdown-it": "14.2.0",
     "pathe": "^1.1.2",
     "pinia": "^3.0.4",
     "pinia-plugin-persistedstate": "^4.7.1",
