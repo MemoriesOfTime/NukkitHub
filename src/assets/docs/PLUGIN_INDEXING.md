@@ -70,7 +70,7 @@ Recommended setup:
 - Prefer `src/main/resources/powernukkitx.yml`
 - Add `powernukkitx-plugin` or `pnx-plugin`
 - Reference PowerNukkitX-related dependencies, such as:
-  - `cn.powernukkitx`
+  - `org.powernukkitx`
   - `powernukkitx`
 
 Using `powernukkitx.yml` is the clearest way to make a PowerNukkitX module indexable.

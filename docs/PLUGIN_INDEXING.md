@@ -12,9 +12,11 @@ To get your plugin included, make sure your repository satisfies all of the foll
 4. **Do not add the `noindex` topic**
 5. **Put your manifest in the standard path**
    - `src/main/resources/plugin.yml`
+   - `src/main/resources/nukkit.yml` (supported by all Nukkit-family loaders)
    - or `src/main/resources/powernukkitx.yml` for PowerNukkitX-first modules
+   - or use the PNX `@PluginMeta` annotation on your main class (see PowerNukkitX below)
 6. **Add the topic that matches your target runtime**
-7. **Fill in `plugin.yml` / `powernukkitx.yml` and README.md**
+7. **Fill in your manifest and README.md**
 
 If you only do one extra thing beyond the manifest, add the correct topic. That makes discovery much more reliable.
 
@@ -65,15 +67,39 @@ If your plugin supports both NukkitX and Nukkit-MOT, generic `cn.nukkit:*` depen
 
 ### PowerNukkitX (`pnx`)
 
-Recommended setup:
+Recommended setup — two supported styles:
+
+Style A — hand-written manifest:
 
 - Prefer `src/main/resources/powernukkitx.yml`
 - Add `powernukkitx-plugin` or `pnx-plugin`
 - Reference PowerNukkitX-related dependencies, such as:
-  - `cn.powernukkitx`
+  - `org.powernukkitx` (current package)
   - `powernukkitx`
+  - `repo.powernukkitx.org`
 
-Using `powernukkitx.yml` is the clearest way to make a PowerNukkitX module indexable.
+Style B — `@PluginMeta` annotation (official PNX template style):
+
+- Annotate your main class (the one extending `PluginBase`) with `@PluginMeta`
+- Declare `name`, `version`, and `api` on the annotation; `authors`, `description`, `website`, `depend`, `softDepend` are also indexed
+- No yml file is needed — the PNX annotation processor generates `powernukkitx.yml` at build time
+- Add the `powernukkitx-plugin` or `pnx-plugin` topic so the repository is discovered reliably
+
+Example:
+
+```java
+@PluginMeta(
+        name = "MyPlugin",
+        version = "1.0.0",
+        api = {"3.0.0"},
+        authors = {"myname"},
+        description = "A short description"
+)
+public class MyPlugin extends PluginBase {
+}
+```
+
+Using `powernukkitx.yml` or `@PluginMeta` is the clearest way to make a PowerNukkitX module indexable.
 
 ### Lumi (`lumi`)
 
@@ -92,7 +118,9 @@ Recommended setup:
 At least one supported manifest must exist in the standard path:
 
 - `src/main/resources/plugin.yml`
+- `src/main/resources/nukkit.yml`
 - `src/main/resources/powernukkitx.yml`
+- a `@PluginMeta`-annotated main class under `src/main/java` (PowerNukkitX only)
 
 Example:
 
@@ -270,7 +298,7 @@ Check these items in order:
 1. repository is public
 2. repository is not archived
 3. repository does not have the `noindex` topic
-4. manifest exists in `src/main/resources/`
+4. manifest exists in `src/main/resources/`, or your PNX plugin uses `@PluginMeta`
 5. the runtime topic is set correctly
 6. build files clearly reference the runtime you are targeting
 7. wait up to 1 hour for the next indexing cycle

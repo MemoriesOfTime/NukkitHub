@@ -70,7 +70,7 @@
 - 优先使用 `src/main/resources/powernukkitx.yml`
 - 添加 `powernukkitx-plugin` 或 `pnx-plugin`
 - 引用 PowerNukkitX 相关依赖，例如：
-  - `cn.powernukkitx`
+  - `org.powernukkitx`
   - `powernukkitx`
 
 使用 `powernukkitx.yml` 是让 PowerNukkitX 模块被正确识别的最明确方式。

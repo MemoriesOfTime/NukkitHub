@@ -150,7 +150,7 @@ const guideMessages = defineMessages({
   pnxActionDependency: {
     id: 'indexing-guide.core.pnx.action.1',
     defaultMessage:
-      'Use PowerNukkitX-related dependencies such as `cn.powernukkitx`.',
+      'Use PowerNukkitX-related dependencies such as `org.powernukkitx`.',
   },
   pnxActionPluginYml: {
     id: 'indexing-guide.core.pnx.action.2',

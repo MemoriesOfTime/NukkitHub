@@ -10,6 +10,10 @@ use tracing::{debug, debug_span, info, info_span, warn};
 const CODE_SEARCH_QUERIES: &[&str] = &[
     "filename:plugin.yml path:src/main/resources language:YAML",
     "filename:powernukkitx.yml path:src/main/resources language:YAML",
+    "filename:nukkit.yml path:src/main/resources language:YAML",
+    // PNX 新官方模板(PluginTemplate)用 @PluginMeta 注解取代手写 yml,
+    // 源码里没有任何清单文件,只能通过注解名发现
+    "PluginMeta path:src/main/java language:Java",
 ];
 
 const TOPIC_QUERIES: &[&str] = &[
@@ -28,7 +32,9 @@ const KEYWORD_QUERIES: &[&str] = &[
     "lumi plugin in:name,description,readme fork:true",
 ];
 
-const EXCLUDED_REPOS: &[&str] = &[];
+// PNX 服务端自身大量使用 @PluginMeta(注解处理器与测试),会被
+// PluginMeta 代码搜索命中,但它是服务端不是插件
+const EXCLUDED_REPOS: &[&str] = &["PowerNukkitX/PowerNukkitX"];
 
 const START_YEAR: i32 = 2015;
 const SHARD_LIMIT: u64 = 1000;
@@ -301,8 +307,7 @@ fn collect_repo_matches_incremental(
     // perform a full search. The `existing_repos` filter ensures we skip
     // already-known repositories; incremental filtering is handled by the
     // repository search channel which *does* support `pushed:`.
-    let code_collect =
-        collect_repo_matches_by_code_queries(CODE_SEARCH_QUERIES, existing_repos);
+    let code_collect = collect_repo_matches_by_code_queries(CODE_SEARCH_QUERIES, existing_repos);
     merge_collect_result(&mut matches, &mut rate_limited, &mut complete, code_collect);
 
     let topic_collect = collect_repo_matches_by_repository_queries(
@@ -344,8 +349,7 @@ fn collect_repo_matches_full(existing_repos: &HashSet<String>) -> CollectResult 
     let mut complete = true;
 
     // Code search does not support the `pushed:` qualifier — always full scan.
-    let code_collect =
-        collect_repo_matches_by_code_queries(CODE_SEARCH_QUERIES, existing_repos);
+    let code_collect = collect_repo_matches_by_code_queries(CODE_SEARCH_QUERIES, existing_repos);
     merge_collect_result(&mut matches, &mut rate_limited, &mut complete, code_collect);
 
     let topic_collect =
@@ -1026,7 +1030,7 @@ fn process_single_repo(repo_match: RepoMatch) -> Result<Vec<Plugin>, String> {
     }
 
     let mut prefetched_tree = None;
-    let manifest_paths = if manifest_paths.is_empty() {
+    let mut manifest_paths = if manifest_paths.is_empty() {
         match find_plugin_manifests(parts[0], parts[1], &repo)? {
             Some((paths, tree)) => {
                 prefetched_tree = Some(tree);
@@ -1037,6 +1041,18 @@ fn process_single_repo(repo_match: RepoMatch) -> Result<Vec<Plugin>, String> {
     } else {
         manifest_paths
     };
+
+    // 注解型 PNX 插件源码中没有 yml 清单,树扫描找不到;
+    // 对带 PNX topic 的仓库做一次仓库内代码搜索兜底
+    if manifest_paths.is_empty() && has_pnx_topic(&repo) {
+        match find_annotation_manifest_paths_by_repo_search(&full_name) {
+            Ok(paths) => manifest_paths = paths,
+            Err(e) if e.contains("Rate limited") => return Err(e),
+            Err(e) => {
+                debug!(repo = %full_name, error = %e, "Failed to search @PluginMeta manifests");
+            }
+        }
+    }
 
     if manifest_paths.is_empty() {
         debug!(repo = %full_name, "No plugin manifest found");
@@ -1072,11 +1088,36 @@ fn find_plugin_manifests(
     }
 }
 
+fn has_pnx_topic(repo: &crate::github::Repository) -> bool {
+    repo.topics.iter().any(|topic| {
+        matches!(
+            topic.as_str(),
+            "powernukkitx-plugin" | "pnx-plugin" | "powernukkitx" | "pnx"
+        )
+    })
+}
+
+/// 在单个仓库内搜索使用 @PluginMeta 的 Java 文件(legacy 代码搜索会
+/// 忽略 `@` 符号,按标识符命中),仅用于树扫描无 yml 清单的 PNX 仓库。
+fn find_annotation_manifest_paths_by_repo_search(full_name: &str) -> Result<Vec<String>, String> {
+    let query = format!(
+        "repo:{} PluginMeta path:src/main/java language:Java",
+        full_name
+    );
+    let result = client().search_code(&query, 1)?;
+    Ok(result
+        .items
+        .into_iter()
+        .map(|item| item.path)
+        .filter(|path| path.ends_with(".java"))
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        CODE_SEARCH_QUERIES, CollectResult, DiscoverProgress, DiscoverResult, KEYWORD_QUERIES,
-        RepoMatch, TOPIC_QUERIES, is_repo_missing_error, last_day_of_month,
+        CODE_SEARCH_QUERIES, CollectResult, DiscoverProgress, DiscoverResult, EXCLUDED_REPOS,
+        KEYWORD_QUERIES, RepoMatch, TOPIC_QUERIES, is_repo_missing_error, last_day_of_month,
         mark_collect_incomplete_on_search_timeout, merge_collect_result, parse_sync_date,
         pushed_after_query, pushed_range_query, should_mark_repo_processed,
     };
@@ -1124,6 +1165,25 @@ mod tests {
                 .iter()
                 .any(|query| query.contains("filename:powernukkitx.yml"))
         );
+        assert!(
+            CODE_SEARCH_QUERIES
+                .iter()
+                .any(|query| query.contains("filename:nukkit.yml"))
+        );
+    }
+
+    #[test]
+    fn code_search_queries_cover_annotation_based_pnx_plugins() {
+        assert!(
+            CODE_SEARCH_QUERIES
+                .iter()
+                .any(|query| query.contains("PluginMeta") && query.contains("language:Java"))
+        );
+    }
+
+    #[test]
+    fn pnx_server_repo_is_excluded_from_discovery() {
+        assert!(EXCLUDED_REPOS.contains(&"PowerNukkitX/PowerNukkitX"));
     }
 
     #[test]

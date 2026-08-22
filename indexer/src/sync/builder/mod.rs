@@ -56,7 +56,7 @@ const CATEGORIES: &[&str] = &[
 
 pub const TARGET_IDS: &[&str] = &["nkx", "nkmot", "pnx", "lumi"];
 
-const MANIFEST_FILENAMES: &[&str] = &["plugin.yml", "powernukkitx.yml"];
+const MANIFEST_FILENAMES: &[&str] = &["plugin.yml", "powernukkitx.yml", "nukkit.yml"];
 
 #[derive(Debug, Clone, Copy)]
 pub struct BuildOptions {
@@ -202,6 +202,13 @@ pub(crate) fn is_plugin_manifest_path(path: &str) -> bool {
         && MANIFEST_FILENAMES.iter().any(|name| path.ends_with(name))
 }
 
+/// PNX `@PluginMeta` 注解型清单:源码中没有 yml,由 PNX-APT 在编译期
+/// 生成 powernukkitx.yml。此类清单只能来自代码搜索命中或历史索引,
+/// 不会由文件树扫描产生(树里无法确认注解内容)。
+pub(crate) fn is_annotation_manifest_path(path: &str) -> bool {
+    path.ends_with(".java")
+}
+
 pub(crate) fn find_plugin_manifest_paths(tree: &[GitTreeEntry]) -> Vec<String> {
     let mut paths: Vec<String> = tree
         .iter()
@@ -223,9 +230,12 @@ fn ordered_targets(targets: &BTreeSet<&'static str>) -> Vec<String> {
 }
 
 fn module_key_from_manifest_path(path: &str) -> String {
-    path.find("src/main/resources")
-        .map(|pos| path[..pos].trim_end_matches('/').to_string())
-        .unwrap_or_default()
+    for marker in ["src/main/resources", "src/main/java"] {
+        if let Some(pos) = path.find(marker) {
+            return path[..pos].trim_end_matches('/').to_string();
+        }
+    }
+    String::new()
 }
 
 fn group_manifest_paths(manifest_paths: &[String]) -> Vec<Vec<String>> {
@@ -233,7 +243,7 @@ fn group_manifest_paths(manifest_paths: &[String]) -> Vec<Vec<String>> {
 
     for path in manifest_paths
         .iter()
-        .filter(|path| is_plugin_manifest_path(path))
+        .filter(|path| is_plugin_manifest_path(path) || is_annotation_manifest_path(path))
     {
         groups
             .entry(module_key_from_manifest_path(path))
@@ -250,19 +260,16 @@ fn group_manifest_paths(manifest_paths: &[String]) -> Vec<Vec<String>> {
 }
 
 fn find_build_file_paths<'a>(tree: &'a [GitTreeEntry], plugin_yml_path: &str) -> Vec<&'a str> {
-    let module_prefix = plugin_yml_path
-        .find("src/main/resources")
-        .map(|pos| &plugin_yml_path[..pos])
-        .unwrap_or("");
+    let module_key = module_key_from_manifest_path(plugin_yml_path);
 
     let build_names = ["build.gradle.kts", "build.gradle", "pom.xml"];
 
     let mut expected: Vec<String> = Vec::new();
 
     // Module-level build files (for multi-module projects)
-    if !module_prefix.is_empty() {
+    if !module_key.is_empty() {
         for name in &build_names {
-            expected.push(format!("{}{}", module_prefix, name));
+            expected.push(format!("{}/{}", module_key, name));
         }
     }
 
@@ -305,6 +312,10 @@ fn detect_targets_from_topics(topics: &[String]) -> (BTreeSet<&'static str>, Det
                 targets.insert("pnx");
                 confidence.promote(DetectionConfidence::High);
             }
+            "powernukkitx" | "pnx" => {
+                targets.insert("pnx");
+                confidence.promote(DetectionConfidence::Medium);
+            }
             "lumi-plugin" => {
                 targets.insert("lumi");
                 confidence.promote(DetectionConfidence::High);
@@ -321,10 +332,14 @@ fn detect_targets_from_build_content(
 ) -> (BTreeSet<&'static str>, DetectionConfidence) {
     const NKX_INDICATORS: &[&str] = &["cloudburstmc", "repo.nukkitx.com"];
     const NKMOT_INDICATORS: &[&str] = &["memoriesoftime", "nukkit-mot"];
+    // 2026-07 起 PNX 包名由 cn.powernukkitx 迁移到 org.powernukkitx,
+    // 新官方 maven 仓库为 repo.powernukkitx.org。cn.powernukkitx 域名已被
+    // Allay 重定向,不再作为官方信号列出;旧构建仍会命中泛 powernukkitx 子串
     const PNX_INDICATORS: &[&str] = &[
-        "cn.powernukkitx",
+        "org.powernukkitx",
         "powernukkitx",
         "powernukkit/powernukkitx",
+        "repo.powernukkitx.org",
     ];
     const LUMI_INDICATORS: &[&str] = &[
         "repo.luminiadev.com",
@@ -369,16 +384,45 @@ fn detect_targets_from_build_content(
 }
 
 fn select_primary_manifest_path(manifest_paths: &[String]) -> Option<&str> {
-    manifest_paths
-        .iter()
-        .find(|path| path.ends_with("plugin.yml"))
-        .or_else(|| {
-            manifest_paths
-                .iter()
-                .find(|path| path.ends_with("powernukkitx.yml"))
-        })
-        .or_else(|| manifest_paths.first())
+    ordered_manifest_candidates(manifest_paths)
+        .first()
         .map(|path| path.as_str())
+}
+
+/// 由清单本身推断目标运行时:
+/// - powernukkitx.yml / @PluginMeta 注解是 PNX 专属信号
+/// - nukkit.yml 是 Nukkit 系(NukkitX / Nukkit-MOT / PNX)加载器都支持的描述符
+fn manifest_implied_targets(
+    manifest_paths: &[String],
+) -> (BTreeSet<&'static str>, DetectionConfidence) {
+    let mut targets = BTreeSet::new();
+    let mut confidence = DetectionConfidence::Low;
+
+    if manifest_paths
+        .iter()
+        .any(|path| path.ends_with("powernukkitx.yml"))
+    {
+        targets.insert("pnx");
+        confidence.promote(DetectionConfidence::High);
+    }
+    if manifest_paths
+        .iter()
+        .any(|path| is_annotation_manifest_path(path))
+    {
+        targets.insert("pnx");
+        confidence.promote(DetectionConfidence::High);
+    }
+    if manifest_paths
+        .iter()
+        .any(|path| path.ends_with("nukkit.yml"))
+    {
+        targets.insert("nkx");
+        targets.insert("nkmot");
+        targets.insert("pnx");
+        confidence.promote(DetectionConfidence::Medium);
+    }
+
+    (targets, confidence)
 }
 
 fn detect_targets(
@@ -395,13 +439,10 @@ fn detect_targets(
     targets.extend(topic_targets);
     confidence.promote(topic_confidence);
 
-    if manifest_paths
-        .iter()
-        .any(|path| path.ends_with("powernukkitx.yml"))
-    {
-        targets.insert("pnx");
-        confidence.promote(DetectionConfidence::High);
-    }
+    let (manifest_targets, manifest_confidence) = manifest_implied_targets(manifest_paths);
+    targets.extend(manifest_targets);
+    confidence.promote(manifest_confidence);
+
     let build_paths = find_build_file_paths(tree, primary_manifest_path);
     if build_paths.is_empty() && targets.is_empty() {
         debug!(repo = %repo.full_name, module = %module_key_from_manifest_path(primary_manifest_path), "No target evidence found");
@@ -554,29 +595,19 @@ pub fn build_plugins_from_nukkit_with_tree_options(
     let mut plugins = Vec::new();
 
     for manifest_group in manifest_groups {
-        let Some(manifest_path) = select_primary_manifest_path(&manifest_group) else {
+        let Some(primary_manifest_path) = select_primary_manifest_path(&manifest_group) else {
             continue;
         };
 
         let Some(target_detection) = detect_targets(&tree, repo, &manifest_group) else {
-            debug!(repo = %repo.full_name, manifest = %manifest_path, "Skip: no supported targets detected");
+            debug!(repo = %repo.full_name, manifest = %primary_manifest_path, "Skip: no supported targets detected");
             continue;
         };
 
-        let yml_content = match client().get_file_content(owner, repo_name, manifest_path) {
-            Ok(content) => content,
-            Err(e) => {
-                debug!(repo = %repo.full_name, manifest = %manifest_path, error = %e, "Failed to read manifest");
-                continue;
-            }
-        };
-
-        let nukkit_yml = match crate::nukkit::NukkitPluginYml::from_str(&yml_content) {
-            Ok(yml) => yml,
-            Err(e) => {
-                debug!(repo = %repo.full_name, manifest = %manifest_path, error = %e, "Failed to parse manifest");
-                continue;
-            }
+        let Some((manifest_path, nukkit_yml)) =
+            parse_manifest_group(owner, repo_name, &repo.full_name, &manifest_group)
+        else {
+            continue;
         };
 
         if let Some(plugin) = nukkit_yml_to_plugin(
@@ -592,7 +623,7 @@ pub fn build_plugins_from_nukkit_with_tree_options(
             &icon_url,
             repo_gallery.clone(),
             &repo_categories,
-            manifest_path,
+            &manifest_path,
             &target_detection,
             is_multi_module,
         ) {
@@ -601,6 +632,66 @@ pub fn build_plugins_from_nukkit_with_tree_options(
     }
 
     plugins
+}
+
+/// 按优先级排列模块内的清单候选:plugin.yml > powernukkitx.yml >
+/// nukkit.yml > 其他 yml > @PluginMeta 注解源文件;同优先级按路径排序。
+fn ordered_manifest_candidates(manifest_group: &[String]) -> Vec<&String> {
+    let mut candidates: Vec<&String> = manifest_group.iter().collect();
+    candidates.sort_by_key(|path| (manifest_priority(path), path.as_str()));
+    candidates
+}
+
+fn manifest_priority(path: &str) -> u8 {
+    if path.ends_with("plugin.yml") {
+        0
+    } else if path.ends_with("powernukkitx.yml") {
+        1
+    } else if path.ends_with("nukkit.yml") {
+        2
+    } else if is_annotation_manifest_path(path) {
+        3
+    } else {
+        4
+    }
+}
+
+/// 逐个尝试解析模块内清单,返回第一个可用的。
+/// 代码搜索返回的 .java 命中可能包含未标注 @PluginMeta 的类,
+/// 因此注解清单必须逐候选尝试而非只取第一个。
+fn parse_manifest_group(
+    owner: &str,
+    repo_name: &str,
+    repo_full_name: &str,
+    manifest_group: &[String],
+) -> Option<(String, crate::nukkit::NukkitPluginYml)> {
+    for path in ordered_manifest_candidates(manifest_group) {
+        let content = match client().get_file_content(owner, repo_name, path) {
+            Ok(content) => content,
+            Err(e) => {
+                debug!(repo = %repo_full_name, manifest = %path, error = %e, "Failed to read manifest");
+                continue;
+            }
+        };
+
+        if is_annotation_manifest_path(path) {
+            match crate::nukkit::parse_plugin_meta(&content, path) {
+                Some(yml) => return Some((path.clone(), yml)),
+                None => {
+                    debug!(repo = %repo_full_name, manifest = %path, "No usable @PluginMeta annotation");
+                }
+            }
+        } else {
+            match crate::nukkit::NukkitPluginYml::from_str(&content) {
+                Ok(yml) => return Some((path.clone(), yml)),
+                Err(e) => {
+                    debug!(repo = %repo_full_name, manifest = %path, error = %e, "Failed to parse manifest");
+                }
+            }
+        }
+    }
+
+    None
 }
 
 fn is_placeholder(s: &str) -> bool {
@@ -827,8 +918,11 @@ fn combine_categories(topic_categories: Vec<String>, ai_categories: Vec<String>)
 mod tests {
     use super::{
         BuildOptions, build_plugin_id, categories_from_topics, combine_categories,
-        detect_categories_with_classifier, detect_targets_from_build_content, group_manifest_paths,
-        is_plugin_manifest_path, parse_timestamp, project_updated_timestamp, resolve_authors,
+        detect_categories_with_classifier, detect_targets_from_build_content,
+        detect_targets_from_topics, group_manifest_paths, is_annotation_manifest_path,
+        is_plugin_manifest_path, manifest_implied_targets, module_key_from_manifest_path,
+        ordered_manifest_candidates, parse_timestamp, project_updated_timestamp, resolve_authors,
+        select_primary_manifest_path,
     };
     use crate::github::{Contributor, Owner, Release, Repository};
 
@@ -972,6 +1066,21 @@ mod tests {
     fn detects_powernukkitx_targets() {
         let gradle = r#"
             dependencies {
+                compileOnly("org.powernukkitx:powernukkitx:1.20.0-r1")
+            }
+        "#;
+
+        let (targets, confidence) = detect_targets_from_build_content(&gradle.to_lowercase());
+        assert_eq!(targets.into_iter().collect::<Vec<_>>(), vec!["pnx"]);
+        assert_eq!(confidence.as_str(), "high");
+    }
+
+    #[test]
+    fn detects_legacy_cn_powernukkitx_builds_via_generic_indicator() {
+        // cn.powernukkitx 已不是官方信号,但迁移前的旧构建仍应通过
+        // 泛 powernukkitx 子串命中,避免存量插件漏检
+        let gradle = r#"
+            dependencies {
                 compileOnly("cn.powernukkitx:powernukkitx:1.20.0-r1")
             }
         "#;
@@ -1098,8 +1207,19 @@ mod tests {
         assert!(is_plugin_manifest_path(
             "modules/foo/src/main/resources/powernukkitx.yml"
         ));
+        assert!(is_plugin_manifest_path("src/main/resources/nukkit.yml"));
         assert!(!is_plugin_manifest_path(
             "src/main/resources/not-plugin.yaml"
+        ));
+    }
+
+    #[test]
+    fn detects_annotation_manifest_paths() {
+        assert!(is_annotation_manifest_path(
+            "src/main/java/io/github/foo/Bar.java"
+        ));
+        assert!(!is_annotation_manifest_path(
+            "src/main/resources/plugin.yml"
         ));
     }
 
@@ -1114,6 +1234,119 @@ mod tests {
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].len(), 2);
         assert_eq!(groups[1].len(), 1);
+    }
+
+    #[test]
+    fn groups_annotation_manifest_into_same_module_as_yml() {
+        assert_eq!(
+            module_key_from_manifest_path("modules/foo/src/main/java/com/foo/Bar.java"),
+            "modules/foo"
+        );
+        assert_eq!(
+            module_key_from_manifest_path("modules/foo/src/main/resources/plugin.yml"),
+            "modules/foo"
+        );
+
+        let groups = group_manifest_paths(&[
+            "modules/foo/src/main/resources/plugin.yml".to_string(),
+            "modules/foo/src/main/java/com/foo/Bar.java".to_string(),
+            "modules/baz/src/main/java/com/baz/Baz.java".to_string(),
+        ]);
+
+        assert_eq!(groups.len(), 2);
+        // BTreeMap 按 key 排序:modules/baz 在前,modules/foo 在后
+        assert_eq!(groups[0].len(), 1);
+        assert_eq!(groups[1].len(), 2);
+    }
+
+    #[test]
+    fn prefers_yml_manifests_over_annotation_manifest() {
+        let paths = vec![
+            "src/main/java/com/foo/Foo.java".to_string(),
+            "src/main/resources/plugin.yml".to_string(),
+        ];
+        assert_eq!(
+            select_primary_manifest_path(&paths),
+            Some("src/main/resources/plugin.yml")
+        );
+
+        let annotation_only = vec!["src/main/java/com/foo/Foo.java".to_string()];
+        assert_eq!(
+            select_primary_manifest_path(&annotation_only),
+            Some("src/main/java/com/foo/Foo.java")
+        );
+    }
+
+    #[test]
+    fn orders_manifest_candidates_by_priority() {
+        let group = vec![
+            "src/main/java/com/foo/ZListener.java".to_string(),
+            "src/main/resources/nukkit.yml".to_string(),
+            "src/main/java/com/foo/AMain.java".to_string(),
+            "src/main/resources/plugin.yml".to_string(),
+        ];
+        let candidates = ordered_manifest_candidates(&group);
+
+        let paths: Vec<&str> = candidates.iter().map(|p| p.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec![
+                "src/main/resources/plugin.yml",
+                "src/main/resources/nukkit.yml",
+                // 同优先级保持字母序:主类 AMain 在误报 ZListener 之前
+                "src/main/java/com/foo/AMain.java",
+                "src/main/java/com/foo/ZListener.java",
+            ]
+        );
+    }
+
+    #[test]
+    fn manifest_implies_pnx_from_powernukkitx_yml_and_annotation() {
+        let (targets, confidence) =
+            manifest_implied_targets(&["src/main/resources/powernukkitx.yml".to_string()]);
+        assert_eq!(targets.into_iter().collect::<Vec<_>>(), vec!["pnx"]);
+        assert_eq!(confidence.as_str(), "high");
+
+        let (targets, confidence) =
+            manifest_implied_targets(&["src/main/java/com/foo/Foo.java".to_string()]);
+        assert_eq!(targets.into_iter().collect::<Vec<_>>(), vec!["pnx"]);
+        assert_eq!(confidence.as_str(), "high");
+    }
+
+    #[test]
+    fn nukkit_yml_manifest_implies_shared_family_targets() {
+        let (targets, confidence) =
+            manifest_implied_targets(&["src/main/resources/nukkit.yml".to_string()]);
+        assert_eq!(
+            targets.into_iter().collect::<Vec<_>>(),
+            vec!["nkmot", "nkx", "pnx"]
+        );
+        assert_eq!(confidence.as_str(), "medium");
+    }
+
+    #[test]
+    fn detects_org_powernukkitx_targets() {
+        let pom = r#"
+            <dependency>
+                <groupId>org.powernukkitx</groupId>
+                <artifactId>server</artifactId>
+            </dependency>
+            <repository>
+                <url>https://repo.powernukkitx.org/releases</url>
+            </repository>
+        "#;
+
+        let (targets, confidence) = detect_targets_from_build_content(&pom.to_lowercase());
+        assert_eq!(targets.into_iter().collect::<Vec<_>>(), vec!["pnx"]);
+        assert_eq!(confidence.as_str(), "high");
+    }
+
+    #[test]
+    fn plain_powernukkitx_topics_map_to_pnx() {
+        let (targets, confidence) =
+            detect_targets_from_topics(&["powernukkitx".to_string(), "pnx".to_string()]);
+        assert_eq!(targets.into_iter().collect::<Vec<_>>(), vec!["pnx"]);
+        assert_eq!(confidence.as_str(), "medium");
     }
 
     #[test]

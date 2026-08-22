@@ -139,7 +139,7 @@ fn update_plugin(plugin: &Plugin, force: bool) -> Result<UpdateStatus, String> {
         }
     };
 
-    let manifest_paths = find_plugin_manifest_paths(&tree);
+    let manifest_paths = manifest_paths_for_update(&tree, &plugin.manifest_path);
     if manifest_paths.is_empty() {
         debug!(id = %plugin.id, "No plugin manifest found in tree, marking deleted");
         return Ok(UpdateStatus::Deleted);
@@ -175,6 +175,28 @@ fn update_plugin(plugin: &Plugin, force: bool) -> Result<UpdateStatus, String> {
 
 fn merge_preserved_categories(old: &Plugin, new: &mut Plugin) {
     new.categories = old.categories.clone();
+}
+
+/// 树扫描只能找到 yml 清单;注解型 PNX 插件(@PluginMeta,无 yml)需要
+/// 用上次索引保存的 manifest_path 兜底,否则会被误判为已删除。
+fn manifest_paths_for_update(
+    tree: &[crate::github::GitTreeEntry],
+    stored_manifest_path: &str,
+) -> Vec<String> {
+    let mut manifest_paths = find_plugin_manifest_paths(tree);
+
+    if !stored_manifest_path.is_empty()
+        && tree
+            .iter()
+            .any(|entry| entry.entry_type == "blob" && entry.path == stored_manifest_path)
+        && !manifest_paths
+            .iter()
+            .any(|path| path == stored_manifest_path)
+    {
+        manifest_paths.push(stored_manifest_path.to_string());
+    }
+
+    manifest_paths
 }
 
 fn merge_preserved_fields(old: &Plugin, new: &mut Plugin) {
@@ -250,10 +272,50 @@ fn versions_changed(old: &[crate::plugin::Version], new: &[crate::plugin::Versio
 #[cfg(test)]
 mod tests {
     use super::{
-        UpdateStatus, is_missing_repo_error, merge_preserved_categories, plugin_changed,
-        should_mark_update_processed,
+        UpdateStatus, is_missing_repo_error, manifest_paths_for_update, merge_preserved_categories,
+        plugin_changed, should_mark_update_processed,
     };
+    use crate::github::GitTreeEntry;
     use crate::plugin::Plugin;
+
+    fn tree_with_paths(paths: &[&str]) -> Vec<GitTreeEntry> {
+        paths
+            .iter()
+            .map(|path| GitTreeEntry {
+                path: (*path).to_string(),
+                entry_type: "blob".to_string(),
+                sha: String::new(),
+                size: Some(1),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn update_keeps_stored_annotation_manifest_missing_from_tree_scan() {
+        let tree = tree_with_paths(&["pom.xml", "src/main/java/io/github/foo/Bar.java"]);
+
+        let paths = manifest_paths_for_update(&tree, "src/main/java/io/github/foo/Bar.java");
+
+        assert_eq!(paths, vec!["src/main/java/io/github/foo/Bar.java"]);
+    }
+
+    #[test]
+    fn update_does_not_keep_stored_manifest_removed_from_tree() {
+        let tree = tree_with_paths(&["pom.xml"]);
+
+        let paths = manifest_paths_for_update(&tree, "src/main/resources/plugin.yml");
+
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn update_does_not_duplicate_stored_manifest() {
+        let tree = tree_with_paths(&["src/main/resources/plugin.yml"]);
+
+        let paths = manifest_paths_for_update(&tree, "src/main/resources/plugin.yml");
+
+        assert_eq!(paths, vec!["src/main/resources/plugin.yml"]);
+    }
 
     fn plugin_with_updated_at(updated_at: u64) -> Plugin {
         let mut plugin: Plugin = serde_json::from_value(serde_json::json!({

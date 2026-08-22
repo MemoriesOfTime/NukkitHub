@@ -3045,7 +3045,7 @@
     "message": "NukkitX 插件"
   },
   "indexing-guide.core.pnx.action.1": {
-    "message": "使用 PowerNukkitX 相关依赖，例如 `cn.powernukkitx`。"
+    "message": "使用 PowerNukkitX 相关依赖，例如 `org.powernukkitx`。"
   },
   "indexing-guide.core.pnx.action.2": {
     "message": "如果你必须继续使用 `plugin.yml`，请确保构建文件中清晰引用 PowerNukkitX，以便项目被正确分类。"
