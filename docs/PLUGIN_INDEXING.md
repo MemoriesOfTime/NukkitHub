@@ -35,7 +35,7 @@ If your plugin supports both NukkitX and Nukkit-MOT, `nukkit-plugin` is acceptab
 
 **How to add a topic:** GitHub repository -> About -> gear icon -> Topics.
 
-> **Fork note:** If your plugin repository is a fork, adding the correct topic is especially important.
+> **Fork note:** If your plugin repository is a fork, adding the correct topic is especially important. Forks that have no commits of their own ahead of the upstream repository are treated as mirrors and skipped.
 
 ## What To Do For Each Runtime
 

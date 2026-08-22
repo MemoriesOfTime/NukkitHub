@@ -30,6 +30,7 @@ struct ResponseCache {
     releases: HashMap<String, CacheEntry<Vec<Release>>>,
     contributors: HashMap<String, CacheEntry<Vec<Contributor>>>,
     raw_contents: HashMap<String, CacheEntry<String>>,
+    compares: HashMap<String, CacheEntry<CompareResult>>,
 }
 
 impl ResponseCache {
@@ -40,6 +41,7 @@ impl ResponseCache {
             releases: cache.releases,
             contributors: cache.contributors,
             raw_contents: cache.raw_contents,
+            compares: cache.compares,
         }
     }
 
@@ -50,6 +52,7 @@ impl ResponseCache {
             releases: self.releases.clone(),
             contributors: self.contributors.clone(),
             raw_contents: self.raw_contents.clone(),
+            compares: self.compares.clone(),
         }
     }
 
@@ -59,10 +62,13 @@ impl ResponseCache {
         let contributors_prefix = format!("{}/{}/contributors?", owner, repo);
         let content_prefix = format!("contents/{}/{}/", owner, repo);
         let tree_prefix = format!("{}/{}/", owner, repo);
+        let compare_prefix = format!("{}/{}/compare/", owner, repo);
 
         self.repositories.remove(&repo_key);
         self.releases.remove(&repo_key);
         self.trees.retain(|key, _| !key.starts_with(&tree_prefix));
+        self.compares
+            .retain(|key, _| !key.starts_with(&compare_prefix));
         self.contributors
             .retain(|key, _| key != &repo_key && !key.starts_with(&contributors_prefix));
         self.raw_contents
@@ -640,6 +646,47 @@ impl GitHubClient {
         self.request(&url)
     }
 
+    /// 比较两个引用(跨仓库需用 `owner:branch` 形式),返回 head 相对 base 的领先提交数
+    pub fn compare_repository(
+        &self,
+        owner: &str,
+        repo: &str,
+        base: &str,
+        head: &str,
+    ) -> Result<CompareResult, String> {
+        let basehead = format!("{}...{}", base, head);
+        let cache_key = format!("{}/{}/compare/{}", owner, repo, basehead);
+        let url = format!("{}/repos/{}/{}/compare/{}", API_BASE, owner, repo, basehead);
+
+        let cached = {
+            let cache = self.cache.read().unwrap();
+            cache.compares.get(&cache_key).cloned()
+        };
+
+        let etag = cached.as_ref().and_then(|e| e.etag.as_deref());
+
+        match self.request_with_etag::<CompareResult>(&url, etag) {
+            Ok((data, new_etag)) => {
+                let mut cache = self.cache.write().unwrap();
+                cache.compares.insert(
+                    cache_key,
+                    CacheEntry {
+                        data: data.clone(),
+                        etag: new_etag,
+                    },
+                );
+                Ok(data)
+            }
+            Err(e) if e == "not_modified" => {
+                debug!(key = %cache_key, "Cache hit (304)");
+                cached
+                    .map(|entry| entry.data)
+                    .ok_or_else(|| "not_modified without cached compare".to_string())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     pub fn get_releases(&self, owner: &str, repo: &str) -> Result<Vec<Release>, String> {
         let cache_key = format!("{}/{}", owner, repo);
         let url = format!("{}/repos/{}/{}/releases?per_page=30", API_BASE, owner, repo);
@@ -1015,6 +1062,72 @@ mod tests {
         .unwrap()
     }
 
+    // GitHub repo 接口对 fork 返回完整仓库对象形式的 parent,只取所需子集
+    #[test]
+    fn parses_fork_parent_from_repository_json() {
+        let repo: Repository = serde_json::from_value(json!({
+            "id": 2,
+            "full_name": "forker/plugin",
+            "name": "plugin",
+            "owner": { "login": "forker" },
+            "fork": true,
+            "parent": {
+                "id": 1,
+                "full_name": "upstream/plugin",
+                "name": "plugin",
+                "owner": { "login": "upstream" },
+                "default_branch": "master",
+                "html_url": "https://github.com/upstream/plugin",
+                "topics": ["nukkit-plugin"]
+            }
+        }))
+        .unwrap();
+
+        assert!(repo.fork);
+        let parent = repo.parent.unwrap();
+        assert_eq!(parent.full_name, "upstream/plugin");
+        assert_eq!(parent.default_branch.as_deref(), Some("master"));
+    }
+
+    #[test]
+    fn repository_json_without_parent_defaults_to_none() {
+        let repo: Repository = serde_json::from_value(json!({
+            "id": 1,
+            "full_name": "owner/repo",
+            "name": "repo",
+            "owner": { "login": "owner" }
+        }))
+        .unwrap();
+
+        assert!(repo.parent.is_none());
+    }
+
+    // compare 接口响应含大量无关字段(commits/files/base_commit 等),只解析所需三个
+    #[test]
+    fn parses_compare_result_json() {
+        let compare: CompareResult = serde_json::from_value(json!({
+            "url": "https://api.github.com/repos/forker/plugin/compare/...",
+            "html_url": "https://github.com/forker/plugin/compare/...",
+            "diff_url": "https://github.com/forker/plugin/compare/....diff",
+            "patch_url": "https://github.com/forker/plugin/compare/....patch",
+            "base_commit": {
+                "sha": "abc",
+                "commit": { "message": "base", "author": { "name": "a" } }
+            },
+            "status": "identical",
+            "ahead_by": 0,
+            "behind_by": 3,
+            "total_commits": 0,
+            "files": [],
+            "commits": []
+        }))
+        .unwrap();
+
+        assert_eq!(compare.status, "identical");
+        assert_eq!(compare.ahead_by, 0);
+        assert_eq!(compare.behind_by, 3);
+    }
+
     #[test]
     fn classifies_search_rate_limit_resources_from_url() {
         assert_eq!(
@@ -1165,6 +1278,32 @@ mod tests {
             ]
             .into_iter()
             .collect(),
+            compares: [
+                (
+                    "owner/repo/compare/upstream:main...owner:main".to_string(),
+                    CacheEntry {
+                        data: CompareResult {
+                            status: "ahead".to_string(),
+                            ahead_by: 2,
+                            behind_by: 0,
+                        },
+                        etag: Some("compare-etag".to_string()),
+                    },
+                ),
+                (
+                    "owner/repo2/compare/upstream:main...owner2:main".to_string(),
+                    CacheEntry {
+                        data: CompareResult {
+                            status: "identical".to_string(),
+                            ahead_by: 0,
+                            behind_by: 0,
+                        },
+                        etag: Some("compare-etag-2".to_string()),
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
         });
 
         cache.clear_repository_related("owner", "repo");
@@ -1174,6 +1313,16 @@ mod tests {
         assert!(cache.releases.is_empty());
         assert!(cache.contributors.is_empty());
         assert!(cache.raw_contents.is_empty());
+        assert!(
+            !cache
+                .compares
+                .contains_key("owner/repo/compare/upstream:main...owner:main")
+        );
+        assert!(
+            cache
+                .compares
+                .contains_key("owner/repo2/compare/upstream:main...owner2:main")
+        );
     }
 
     #[test]
@@ -1209,6 +1358,7 @@ mod tests {
             releases: HashMap::new(),
             contributors: HashMap::new(),
             raw_contents: HashMap::new(),
+            compares: HashMap::new(),
         });
 
         cache.clear_repository_related("owner", "repo");
@@ -1252,6 +1402,7 @@ mod tests {
             .into_iter()
             .collect(),
             raw_contents: HashMap::new(),
+            compares: HashMap::new(),
         });
 
         cache.clear_repository_related("owner", "repo");

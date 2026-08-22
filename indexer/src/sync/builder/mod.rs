@@ -950,6 +950,7 @@ mod tests {
             archived: false,
             default_branch: Some("main".to_string()),
             contributors_url: String::new(),
+            parent: None,
         }
     }
 

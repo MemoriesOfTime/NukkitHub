@@ -34,6 +34,30 @@ pub struct Repository {
     pub default_branch: Option<String>,
     #[serde(default)]
     pub contributors_url: String,
+    // 必须保持为最后一个字段:postcard 缓存按字段顺序反序列化,
+    // 追加在末尾且带 serde(default) 才能兼容旧缓存条目
+    #[serde(default)]
+    pub parent: Option<RepositoryParent>,
+}
+
+/// fork 仓库的直接上游(GitHub repo 接口中 parent 的子集)
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RepositoryParent {
+    #[serde(default)]
+    pub full_name: String,
+    #[serde(default)]
+    pub default_branch: Option<String>,
+}
+
+/// compare 接口结果,只需判断相对上游是否有独立提交
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CompareResult {
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub ahead_by: u64,
+    #[serde(default)]
+    pub behind_by: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
