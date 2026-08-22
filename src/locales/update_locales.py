@@ -33,15 +33,19 @@ def get_locale_files():
 
 
 def load_locale(filepath):
-    """Load a locale JSON file."""
-    with open(filepath, 'r', encoding='utf-8') as f:
-        return json.load(f)
+    """Load a locale JSON file, refusing paths outside LOCALES_DIR."""
+    resolved = Path(filepath).resolve()
+    if LOCALES_DIR.resolve() not in resolved.parents:
+        raise ValueError(f"path escapes locales directory: {filepath}")
+    return json.loads(resolved.read_text(encoding='utf-8'))
 
 
 def save_locale(filepath, data):
-    """Save a locale JSON file with proper formatting."""
-    with open(filepath, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    """Save a locale JSON file with proper formatting, refusing paths outside LOCALES_DIR."""
+    resolved = Path(filepath).resolve()
+    if LOCALES_DIR.resolve() not in resolved.parents:
+        raise ValueError(f"path escapes locales directory: {filepath}")
+    resolved.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
     print(f"  Saved: {filepath}")
 
 
