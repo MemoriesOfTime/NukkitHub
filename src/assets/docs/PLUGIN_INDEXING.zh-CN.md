@@ -82,7 +82,7 @@
 - 使用 `src/main/resources/plugin.yml`
 - 添加 `lumi-plugin` topic
 - 在 Gradle 或 Maven 中显式引用 Lumi，例如：
-  - `repo.luminiadev.com`
+  - `repo.lumi.su`
   - `com.koshakmine:lumi`
   - 包含 `com.koshakmine` 与 `lumi` 的 Maven 坐标
 

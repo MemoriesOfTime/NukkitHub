@@ -82,7 +82,7 @@ Recommended setup:
 - Use `src/main/resources/plugin.yml`
 - Add the `lumi-plugin` topic
 - Reference Lumi in Gradle or Maven, such as:
-  - `repo.luminiadev.com`
+  - `repo.lumi.su`
   - `com.koshakmine:lumi`
   - Maven coordinates containing `com.koshakmine` and `lumi`
 

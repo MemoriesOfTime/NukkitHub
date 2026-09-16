@@ -108,8 +108,8 @@ Recommended setup:
 - Use `src/main/resources/plugin.yml`
 - Add the `lumi-plugin` topic
 - Reference Lumi in Gradle or Maven, such as:
-  - `repo.luminiadev.com`
-  - `repo.lumi.su` as an auxiliary repository hint alongside shared Nukkit markers
+  - `repo.lumi.su`
+  - `repo.luminiadev.com` as an auxiliary repository hint alongside shared Nukkit markers (legacy domain)
   - `com.koshakmine:lumi`
   - Maven coordinates containing `com.koshakmine` and `lumi`
 
