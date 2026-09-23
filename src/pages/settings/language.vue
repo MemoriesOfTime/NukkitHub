@@ -2,7 +2,6 @@
 import {
   Admonition,
   commonSettingsMessages,
-  IntlFormatted,
   LanguageSelector,
   languageSelectorMessages,
   LOCALES,
@@ -42,19 +41,6 @@ async function onLocaleChange(newLocale: string) {
         }}
       </Admonition>
 
-      <div class="card-description mt-4">
-        <IntlFormatted
-          :message-id="languageSelectorMessages.languagesDescription"
-          :values="{ platform }"
-        >
-          <template #~crowdin-link="{ children }">
-            <a href="https://github.com/MemoriesOfTime/NukkitHub">
-              <component :is="() => children" />
-            </a>
-          </template>
-        </IntlFormatted>
-      </div>
-
       <ClientOnly>
         <LanguageSelector
           :current-locale="locale"
@@ -66,21 +52,3 @@ async function onLocaleChange(newLocale: string) {
     </section>
   </div>
 </template>
-
-<style scoped lang="scss">
-.card-description {
-  margin-bottom: calc(var(--spacing-card-sm) + var(--spacing-card-md));
-
-  a {
-    color: var(--color-link);
-
-    &:hover {
-      color: var(--color-link-hover);
-    }
-
-    &:active {
-      color: var(--color-link-active);
-    }
-  }
-}
-</style>

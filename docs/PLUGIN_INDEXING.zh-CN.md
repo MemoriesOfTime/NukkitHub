@@ -146,6 +146,19 @@ softdepend: []
 
 只有 **GitHub Releases** 会被索引为插件版本。
 
+## 编程访问（公开 API）
+
+已收录的插件也通过 NukkitHub 公开 API 以机器可读的 JSON 暴露，形状参考
+Modrinth API：
+
+- 列出插件：`https://plugins.nukkit-mot.com/api/v2/search.json`
+  （或按运行时预过滤的 `/api/v2/search/{loader}.json`）
+- 某插件的最新可安装版本：`/api/v2/project/{owner}/{name}/latest.json`
+
+要出现下载链接，需要发布带 `.jar` 附件的 GitHub Release（见上文）。
+完整端点参考、响应结构以及面向 Modrinth 工具的兼容性说明见
+[API.md](https://github.com/MemoriesOfTime/NukkitHub/blob/master/docs/API.md)。
+
 ## 分类
 
 添加分类 topic 可以帮助用户更快找到你的插件：

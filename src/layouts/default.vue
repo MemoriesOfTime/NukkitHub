@@ -14,7 +14,7 @@
     }"
   >
     <header
-      class="experimental-styles-within desktop-only relative z-[5] mx-auto grid max-w-[1280px] grid-cols-[1fr_auto] items-center gap-2 px-6 py-4 lg:grid-cols-[auto_1fr_auto]"
+      class="experimental-styles-within desktop-only relative z-[5] mx-auto grid max-w-[1280px] grid-cols-[1fr_auto] items-center gap-2 px-6 py-4 lg:grid-cols-[1fr_auto_1fr]"
     >
       <div>
         <NuxtLink
@@ -82,9 +82,17 @@
               }}</span>
             </nuxt-link>
           </ButtonStyled>
+          <ButtonStyled type="transparent">
+            <nuxt-link to="/api-docs" prefetch-on="interaction">
+              <BracesIcon aria-hidden="true" />
+              <span class="hidden md:contents">{{
+                formatMessage(navMenuMessages.apiDocs)
+              }}</span>
+            </nuxt-link>
+          </ButtonStyled>
         </template>
       </div>
-      <div class="flex items-center gap-1">
+      <div class="flex items-center gap-1 lg:justify-end">
         <ButtonStyled circular>
           <nuxt-link
             :v-tooltip="formatMessage(commonMessages.settingsLabel)"
@@ -129,6 +137,14 @@
           >
             <BookTextIcon aria-hidden="true" />
             {{ formatMessage(navMenuMessages.indexingGuide) }}
+          </NuxtLink>
+          <NuxtLink
+            class="iconified-button"
+            to="/api-docs"
+            prefetch-on="interaction"
+          >
+            <BracesIcon aria-hidden="true" />
+            {{ formatMessage(navMenuMessages.apiDocs) }}
           </NuxtLink>
           <NuxtLink class="iconified-button" to="/settings">
             <SettingsIcon aria-hidden="true" />
@@ -179,6 +195,7 @@
 <script setup>
 import {
   BookTextIcon,
+  BracesIcon,
   HomeIcon,
   MoonIcon,
   PlugIcon,
@@ -227,6 +244,10 @@ const navMenuMessages = defineMessages({
   indexingGuide: {
     id: 'layout.nav.indexing-guide',
     defaultMessage: 'Indexing Guide',
+  },
+  apiDocs: {
+    id: 'layout.nav.api-docs',
+    defaultMessage: 'API',
   },
 })
 

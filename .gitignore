@@ -60,6 +60,8 @@ bun.lockb
 
 # NukkitHubIndex
 /NukkitHubIndex
+# Public API export (generated at build time)
+/src/public/api/
 **/orama-index.bin
 **/orama-index-*.bin
 allayindexer

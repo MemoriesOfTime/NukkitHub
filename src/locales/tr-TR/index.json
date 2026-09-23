@@ -1520,6 +1520,9 @@
   "layout.nav.analytics": {
     "message": "Veriler"
   },
+  "layout.nav.api-docs": {
+    "message": "API"
+  },
   "layout.nav.discover": {
     "message": "Keşfet"
   },
@@ -1540,6 +1543,9 @@
   },
   "layout.nav.host-a-server": {
     "message": "Sunucu kur"
+  },
+  "layout.nav.indexing-guide": {
+    "message": "İndeksleme kılavuzu"
   },
   "layout.nav.modrinth-app": {
     "message": "AllayLauncher"

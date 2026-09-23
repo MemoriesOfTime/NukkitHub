@@ -14,7 +14,10 @@ export type MessageDescriptorMap<K extends string> = Record<
   MessageDescriptor
 >
 
-export type CrowdinMessages = Record<string, { message: string } | string>
+export type CrowdinMessages = Record<
+  string,
+  { message: string } | { defaultMessage: string } | string
+>
 
 export function defineMessage<T extends MessageDescriptor>(descriptor: T): T {
   return descriptor
@@ -113,6 +116,13 @@ export function transformCrowdinMessages(
       'message' in value
     ) {
       result[key] = value.message
+    } else if (
+      typeof value === 'object' &&
+      value !== null &&
+      'defaultMessage' in value
+    ) {
+      // formatjs-extracted files keep the text under defaultMessage
+      result[key] = value.defaultMessage
     }
   }
   return result

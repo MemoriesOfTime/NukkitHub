@@ -11,20 +11,21 @@
   "scripts": {
     "build": "NODE_OPTIONS=\"--max-old-space-size=8192\" nuxi build",
     "build:search": "([ -f ./.nukkitindexer-bin ] && [ -x ./.nukkitindexer-bin ] && ./.nukkitindexer-bin build) || cargo run --manifest-path indexer/Cargo.toml -- build",
+    "build:api": "bun run scripts/export-api.ts",
+    "build:eo": "bun build api-worker/eo.ts --target=browser --outfile api-worker/dist/eo-function.js",
+    "test:api": "bun test scripts/ api-worker/",
+    "typecheck:api": "tsc -p scripts/tsconfig.json && tsc -p api-worker/tsconfig.json",
     "dev": "bun run build:search && node ./node_modules/nuxt/bin/nuxt.mjs dev --no-fork",
     "generate": "bun run build:search && nuxi generate",
     "preview": "nuxi preview",
     "postinstall": "nuxi prepare",
-    "typecheck": "nuxi typecheck",
+    "typecheck": "nuxi typecheck && bun run typecheck:api",
     "lint": "eslint .",
     "format:check": "prettier --check .",
     "format": "prettier --write .",
     "check": "nuxi typecheck && eslint .",
     "fix": "eslint . --fix",
     "intl:extract": "formatjs extract \"src/{components,composables,layouts,middleware,modules,pages,plugins,utils}/**/*.{vue,ts,tsx,js,jsx,mts,cts,mjs,cjs}\" \"src/error.vue\" --ignore \"**/*.d.ts\" --ignore node_modules --out-file src/locales/en-US/index.json --format crowdin --preserve-whitespace",
-    "cf-deploy": "pnpm run build && wrangler deploy --env preview",
-    "cf-dev": "pnpm run build && wrangler dev --env preview",
-    "cf-typegen": "wrangler types",
     "clean": "nuxi cleanup && bun run scripts/clean-node-modules.ts && cd ./indexer && cargo clean"
   },
   "devDependencies": {
@@ -39,6 +40,7 @@
     "autoprefixer": "^10.5.0",
     "balanced-match": "^4.0.4",
     "brace-expansion": "^1.1.15",
+    "bun-types": "^1.4.2",
     "eslint": "^9.32.0",
     "glob": "^10.5.0",
     "minimatch": "^3.1.5",
@@ -54,8 +56,7 @@
     "vite": "^7.3.3",
     "vite-svg-loader": "^5.1.1",
     "vue-component-type-helpers": "^3.3.3",
-    "vue-tsc": "^2.2.12",
-    "wrangler": "^4.95.0"
+    "vue-tsc": "^2.2.12"
   },
   "dependencies": {
     "@formatjs/intl-localematcher": "^0.5.10",

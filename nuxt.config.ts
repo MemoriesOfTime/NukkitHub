@@ -273,6 +273,7 @@ function getPrerenderRoutes() {
     '/settings',
     '/settings/language',
     '/indexing-guide',
+    '/api-docs',
   ])
   const indexDir = 'NukkitHubIndex'
 

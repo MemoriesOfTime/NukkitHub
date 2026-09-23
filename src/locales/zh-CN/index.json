@@ -1460,6 +1460,9 @@
   "layout.nav.analytics": {
     "message": "数据"
   },
+  "layout.nav.api-docs": {
+    "message": "API"
+  },
   "layout.nav.discover": {
     "message": "探索"
   },
@@ -1477,6 +1480,9 @@
   },
   "layout.nav.host-a-server": {
     "message": "托管服务器"
+  },
+  "layout.nav.indexing-guide": {
+    "message": "收录指南"
   },
   "layout.nav.modrinth-app": {
     "message": "AllayLauncher"

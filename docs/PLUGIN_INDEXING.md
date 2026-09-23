@@ -175,6 +175,20 @@ However, if you want users to see downloadable versions on NukkitHub, publish re
 
 Only **GitHub Releases** are indexed as plugin versions.
 
+## Programmatic Access (Public API)
+
+Indexed plugins are also available as machine-readable JSON through the
+NukkitHub public API, shaped after the Modrinth API:
+
+- List plugins: `https://plugins.nukkit-mot.com/api/v2/search.json`
+  (or the pre-filtered `/api/v2/search/{loader}.json` for a single runtime)
+- Latest installable version of a plugin:
+  `/api/v2/project/{owner}/{name}/latest.json`
+
+Downloads require a GitHub Release with an attached `.jar` file (see above).
+See [API.md](./API.md) for the full endpoint reference, response shapes, and
+compatibility notes for Modrinth-based tooling.
+
 ## Categories
 
 Add category topics to help users find your plugin:

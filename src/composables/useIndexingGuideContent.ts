@@ -421,17 +421,19 @@ const pitfallBlueprint: PitfallBlueprint[] = [
   },
 ]
 
+// Loaded straight from the repo's docs/ directory — single source of truth,
+// no copy under src/assets that could drift out of sync.
 const guideDocumentModules = import.meta.glob<string>(
-  '../assets/docs/PLUGIN_INDEXING*.md',
+  ['../../docs/PLUGIN_INDEXING.md', '../../docs/PLUGIN_INDEXING.zh-CN.md'],
   {
     query: '?raw',
     import: 'default',
   },
 )
 
-const defaultGuideDocument = '../assets/docs/PLUGIN_INDEXING.md'
+const defaultGuideDocument = '../../docs/PLUGIN_INDEXING.md'
 const localizedGuideDocuments: Record<string, string> = {
-  'zh-CN': '../assets/docs/PLUGIN_INDEXING.zh-CN.md',
+  'zh-CN': '../../docs/PLUGIN_INDEXING.zh-CN.md',
 }
 
 function getGuideDocumentCandidates(localeCode: string): string[] {

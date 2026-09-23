@@ -1484,6 +1484,9 @@
   "layout.nav.analytics": {
     "message": "Analytics"
   },
+  "layout.nav.api-docs": {
+    "message": "API"
+  },
   "layout.nav.discover": {
     "message": "Discover"
   },
@@ -1501,6 +1504,9 @@
   },
   "layout.nav.host-a-server": {
     "message": "Host a server"
+  },
+  "layout.nav.indexing-guide": {
+    "message": "Indexing Guide"
   },
   "layout.nav.modrinth-app": {
     "message": "AllayLauncher"

@@ -1520,6 +1520,9 @@
   "layout.nav.analytics": {
     "message": "Analitiche"
   },
+  "layout.nav.api-docs": {
+    "message": "API"
+  },
   "layout.nav.discover": {
     "message": "Esplora"
   },
@@ -1540,6 +1543,9 @@
   },
   "layout.nav.host-a-server": {
     "message": "Crea un server"
+  },
+  "layout.nav.indexing-guide": {
+    "message": "Guida all'indicizzazione"
   },
   "layout.nav.modrinth-app": {
     "message": "AllayLauncher"

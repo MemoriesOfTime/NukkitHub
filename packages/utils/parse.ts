@@ -1,5 +1,11 @@
 import MarkdownIt from 'markdown-it'
-import { escapeAttrValue, FilterXSS, safeAttrValue, whiteList } from 'xss'
+import xssPkg from 'xss'
+
+// xss attaches most named exports at runtime (a for-in loop over DEFAULT),
+// so they are invisible to Node's ESM-CJS interop used by the dev SSR runner;
+// only the default export (module.exports itself) carries them everywhere
+const { escapeAttrValue, FilterXSS, safeAttrValue, whiteList } =
+  xssPkg as unknown as typeof import('xss')
 
 export const configuredXss = new FilterXSS({
   whiteList: {
