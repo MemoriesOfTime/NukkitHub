@@ -4,7 +4,7 @@ import { computed, ref, useAsyncData, useSeoMeta } from '#imports'
 import {
   type IndexingGuideCoreId,
   loadIndexingGuideMarkdown,
-  useIndexingGuideContent
+  useIndexingGuideContent,
 } from '../composables/useIndexingGuideContent'
 
 const {
@@ -231,7 +231,7 @@ useSeoMeta({
 .section-kicker {
   padding: 0.35rem 0.75rem;
   background: rgb(22 163 74 / 0.12);
-  color: rgb(21 128 61);
+  color: var(--color-kicker-text);
 }
 
 .page-title {
@@ -266,7 +266,7 @@ useSeoMeta({
 .hero-callout {
   padding: 0.95rem 1rem;
   border-radius: 1rem;
-  background: rgb(255 255 255 / 0.72);
+  background: var(--color-callout-bg);
   border: 1px solid var(--color-divider);
 }
 
@@ -334,7 +334,7 @@ useSeoMeta({
   &.active {
     background: var(--color-brand);
     border-color: var(--color-brand);
-    color: white;
+    color: var(--color-on-brand);
   }
 }
 
@@ -352,7 +352,7 @@ useSeoMeta({
 .pitfall-card {
   border-radius: 1rem;
   border: 1px solid var(--color-divider);
-  background: rgb(255 255 255 / 0.68);
+  background: var(--color-glass-card-bg);
   padding: 1.1rem;
 }
 
@@ -390,7 +390,7 @@ useSeoMeta({
 .core-label {
   padding: 0.35rem 0.7rem;
   background: var(--color-brand);
-  color: white;
+  color: var(--color-on-brand);
 }
 
 .core-card {

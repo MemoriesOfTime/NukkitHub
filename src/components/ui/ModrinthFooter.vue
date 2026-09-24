@@ -1,5 +1,11 @@
 <script setup lang="ts">
-import {defineMessage, defineMessages, IntlFormatted, type MessageDescriptor, useVIntl,} from '@modrinth/ui'
+import {
+  defineMessage,
+  defineMessages,
+  IntlFormatted,
+  type MessageDescriptor,
+  useVIntl,
+} from '@modrinth/ui'
 
 const { formatMessage } = useVIntl()
 
@@ -105,7 +111,6 @@ const footerLinks: {
     ],
   },
 ]
-
 </script>
 
 <template>
@@ -115,7 +120,9 @@ const footerLinks: {
     <div
       class="mx-auto flex max-w-screen-xl flex-col gap-6 p-6 pb-20 sm:px-12 md:py-12"
     >
-      <div class="grid grid-cols-1 gap-6 text-primary sm:grid-cols-2 lg:grid-cols-4">
+      <div
+        class="grid grid-cols-1 gap-6 text-primary sm:grid-cols-2 lg:grid-cols-4"
+      >
         <div
           v-for="group in footerLinks"
           :key="group.label.id"
@@ -145,7 +152,7 @@ const footerLinks: {
         </div>
       </div>
       <div
-        class="flex justify-center text-center text-xs font-medium text-secondary opacity-50"
+        class="flex justify-center text-center text-xs font-medium text-secondary"
       >
         <p class="m-0">
           <IntlFormatted :message-id="messages.projectAttribution">
@@ -173,7 +180,7 @@ const footerLinks: {
         </p>
       </div>
       <div
-        class="flex justify-center text-center text-xs font-medium text-secondary opacity-50"
+        class="flex justify-center text-center text-xs font-medium text-secondary"
       >
         {{ formatMessage(messages.legalDisclaimer) }}
       </div>

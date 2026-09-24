@@ -158,7 +158,7 @@ useSeoMeta({
   font-size: 0.8rem;
   font-weight: 700;
   background: rgb(22 163 74 / 0.12);
-  color: rgb(21 128 61);
+  color: var(--color-kicker-text);
 }
 
 .page-title {
@@ -178,7 +178,7 @@ useSeoMeta({
 .hero-callout {
   padding: 0.95rem 1rem;
   border-radius: 1rem;
-  background: rgb(255 255 255 / 0.72);
+  background: var(--color-callout-bg);
   border: 1px solid var(--color-divider);
 }
 

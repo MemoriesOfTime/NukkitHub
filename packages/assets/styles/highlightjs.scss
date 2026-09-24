@@ -63,6 +63,43 @@
   color: #4d99bf;
 }
 
+.dark-mode,
+.dark,
+.oled-mode,
+.retro-mode {
+  .hljs,
+  .hljs-subst {
+    color: #b0bac5;
+  }
+
+  .hljs-comment {
+    color: #93a4b3;
+  }
+
+  .hljs-title,
+  .hljs-section {
+    color: #3fbfbf;
+  }
+
+  .hljs-regexp,
+  .hljs-symbol,
+  .hljs-variable,
+  .hljs-template-variable,
+  .hljs-link,
+  .hljs-selector-attr,
+  .hljs-selector-pseudo {
+    color: #d98f8f;
+  }
+
+  .hljs-meta {
+    color: #63aede;
+  }
+
+  .hljs-meta-string {
+    color: #7cc0ef;
+  }
+}
+
 .hljs-emphasis {
   font-style: italic;
 }
