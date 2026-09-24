@@ -38,6 +38,16 @@ export default defineComponent({
       stopLoading()
       indicator.finish()
     })
+    // Emitted by Nuxt's router plugin before lazy route chunks start loading,
+    // so the bar covers the whole navigation, not just page rendering
+    nuxtApp.hook('page:loading:start', () => {
+      if (!nuxtApp.isHydrating) {
+        indicator.start()
+      }
+    })
+    nuxtApp.hook('page:loading:end', () => {
+      indicator.finish()
+    })
     onBeforeUnmount(() => indicator.clear)
 
     const loading = useLoading()

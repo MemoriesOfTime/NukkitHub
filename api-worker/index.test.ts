@@ -725,3 +725,111 @@ describe('worker fetch handler: routing guardrails', () => {
     expect(res.status).toBe(200)
   })
 })
+
+describe('worker fetch handler: dataset fetch resilience', () => {
+  // fetchDataset reads globalThis.caches?.default when present; tests inject
+  // a stub and always restore the previous global afterwards.
+  function withCacheStub(cache: Partial<Cache>): () => void {
+    const g = globalThis as unknown as { caches?: { default: Cache } }
+    const prev = g.caches
+    g.caches = { default: cache as Cache }
+    return () => {
+      if (prev === undefined) delete g.caches
+      else g.caches = prev
+    }
+  }
+
+  test('transient fetch errors are retried, request succeeds', async () => {
+    let calls = 0
+    const flakyFetch: DatasetFetch = () => {
+      calls++
+      if (calls < 3) return Promise.reject(new Error('edge cold start'))
+      return Promise.resolve(
+        new Response(JSON.stringify({ total_hits: 0, hits: [] }), {
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+    }
+    const res = await call('/api/v2/search', flakyFetch)
+    expect(res.status).toBe(200)
+    expect(calls).toBe(3)
+  })
+
+  test('non-ok statuses are retried too', async () => {
+    let calls = 0
+    const flakyFetch: DatasetFetch = () => {
+      calls++
+      return Promise.resolve(
+        calls < 2
+          ? new Response('bad gateway', { status: 502 })
+          : new Response(JSON.stringify({ total_hits: 0, hits: [] }), {
+              headers: { 'content-type': 'application/json' },
+            }),
+      )
+    }
+    const res = await call('/api/v2/search', flakyFetch)
+    expect(res.status).toBe(200)
+    expect(calls).toBe(2)
+  })
+
+  test('exhausted retries still surface as 502', async () => {
+    let calls = 0
+    const brokenFetch: DatasetFetch = () => {
+      calls++
+      return Promise.resolve(new Response('missing', { status: 404 }))
+    }
+    const res = await call('/api/v2/search', brokenFetch)
+    expect(res.status).toBe(502)
+    expect(calls).toBe(3)
+  })
+
+  test('cache.match throwing degrades to a fresh fetch', async () => {
+    const restore = withCacheStub({
+      match: () => {
+        throw new Error('cache read blew up')
+      },
+      put: () => Promise.resolve(),
+    })
+    try {
+      const dataFetch = makeOriginFetch()
+      const res = await call('/api/v2/search', dataFetch)
+      expect(res.status).toBe(200)
+      expect(dataFetch.requests).toHaveLength(1)
+    } finally {
+      restore()
+    }
+  })
+
+  test('cache.put throwing still serves the response', async () => {
+    const restore = withCacheStub({
+      match: () => Promise.resolve(undefined),
+      put: () => {
+        throw new Error('cache write blew up')
+      },
+    })
+    try {
+      const res = await call('/api/v2/search')
+      expect(res.status).toBe(200)
+      expect(((await res.json()) as { total_hits: number }).total_hits).toBe(3)
+    } finally {
+      restore()
+    }
+  })
+
+  test('cache hit serves without hitting the origin', async () => {
+    const cachedBody = JSON.stringify({ total_hits: 1, hits: [HITS[0]] })
+    const restore = withCacheStub({
+      match: () => Promise.resolve(new Response(cachedBody)),
+      put: () => Promise.resolve(),
+    })
+    try {
+      const dataFetch = makeOriginFetch()
+      const res = await call('/api/v2/search', dataFetch)
+      expect(res.status).toBe(200)
+      expect(dataFetch.requests).toHaveLength(0)
+      expect(((await res.json()) as { total_hits: number }).total_hits).toBe(1)
+    } finally {
+      restore()
+    }
+  })
+})

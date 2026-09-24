@@ -493,30 +493,69 @@ function internalFetchInit(): RequestInit {
  * Pages through normal edge proxying). Uses the runtime Cache API when
  * available so bursts of dynamic queries do not re-fetch the asset each
  * time (absent on some runtimes — the call is simply skipped).
+ *
+ * Resilience: cold cache misses must pull the asset cross-region from the
+ * static origin, which fails intermittently; each failed attempt (throw or
+ * non-ok status) is retried before giving up, and a broken cache read or
+ * write degrades to a plain fetch instead of failing the request.
  */
+const DATASET_ATTEMPTS = 3
+
+async function fetchDatasetResilient(
+  datasetUrl: URL,
+  dataFetch?: DatasetFetch,
+): Promise<Response> {
+  const doFetch: DatasetFetch = dataFetch ?? fetch
+  let lastError: unknown = new Error('dataset fetch failed')
+  for (let attempt = 0; attempt < DATASET_ATTEMPTS; attempt++) {
+    try {
+      const res = await doFetch(
+        new Request(datasetUrl.toString(), internalFetchInit()),
+      )
+      if (res.ok) return res
+      lastError = new Error(`dataset fetch failed with status ${res.status}`)
+    } catch (err) {
+      lastError = err
+    }
+  }
+  throw lastError
+}
+
 export async function fetchDataset(
   url: URL,
   dataFetch?: DatasetFetch,
 ): Promise<SearchResponse> {
-  const doFetch: DatasetFetch = dataFetch ?? fetch
   const datasetUrl = new URL(DATASET_PATH, url.origin)
   const cache = (globalThis as unknown as { caches?: { default: Cache } })
     .caches?.default
   if (cache) {
-    const cached = await cache.match(datasetUrl.toString())
-    if (cached) return (await cached.json()) as SearchResponse
+    try {
+      const cached = await cache.match(datasetUrl.toString())
+      if (cached) return (await cached.json()) as SearchResponse
+    } catch {
+      // unreadable cache entry — fall through to a fresh fetch
+    }
   }
-  const res = await doFetch(
-    new Request(datasetUrl.toString(), internalFetchInit()),
-  )
-  if (!res.ok) {
-    throw new Error(`dataset fetch failed with status ${res.status}`)
-  }
+  const res = await fetchDatasetResilient(datasetUrl, dataFetch)
+  const body = (await res.json()) as SearchResponse
   if (cache) {
-    // put() requires a fresh non-streamed body
-    await cache.put(datasetUrl.toString(), res.clone())
+    try {
+      // re-serialize instead of cloning: a put() failure mid-stream must not
+      // consume the body we are about to return
+      await cache.put(
+        datasetUrl.toString(),
+        new Response(JSON.stringify(body), {
+          headers: {
+            'content-type': 'application/json; charset=utf-8',
+            'cache-control': 'public, max-age=600',
+          },
+        }),
+      )
+    } catch {
+      // unwritable cache — the response is still served
+    }
   }
-  return (await res.json()) as SearchResponse
+  return body
 }
 
 export async function handleSearch(
