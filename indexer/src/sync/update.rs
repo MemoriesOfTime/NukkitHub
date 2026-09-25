@@ -261,7 +261,7 @@ fn versions_changed(old: &[crate::plugin::Version], new: &[crate::plugin::Versio
     }
 
     for (o, n) in old.iter().zip(new.iter()) {
-        if o.version != n.version || o.downloads != n.downloads {
+        if o.version != n.version || o.downloads != n.downloads || o.files != n.files {
             return true;
         }
     }
@@ -343,6 +343,41 @@ mod tests {
 
         let mut new = plugin_with_updated_at(1_612_325_106);
         new.categories = vec!["economy".to_string()];
+
+        assert!(plugin_changed(&old, &new));
+    }
+
+    // sha256 回填场景:已有索引无 sha256,重取后文件带上 sha256,
+    // 必须判定为已变更才会重写 JSON
+    #[test]
+    fn plugin_changed_detects_new_file_sha256() {
+        let file_json = |sha256: Option<&str>| {
+            serde_json::json!({
+                "filename": "p.jar",
+                "url": "https://github.com/owner/repo/releases/download/v1/p.jar",
+                "size": 10,
+                "primary": true,
+                "sha256": sha256,
+            })
+        };
+        let mut old = plugin_with_updated_at(1_612_325_106);
+        old.versions = vec![
+            serde_json::from_value(serde_json::json!({
+                "version": "v1",
+                "files": [file_json(None)],
+            }))
+            .unwrap(),
+        ];
+        let mut new = plugin_with_updated_at(1_612_325_106);
+        new.versions = vec![
+            serde_json::from_value(serde_json::json!({
+                "version": "v1",
+                "files": [file_json(Some(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                ))],
+            }))
+            .unwrap(),
+        ];
 
         assert!(plugin_changed(&old, &new));
     }

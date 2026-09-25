@@ -13,6 +13,9 @@ use tracing::info;
 
 const CACHE_FILE: &str = ".data_cache.bin.gz";
 
+/// 带版本头的缓存格式(见 from_bytes 的说明)
+const CACHE_MAGIC: &[u8] = b"NHCACHE2";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheEntry<T> {
     pub data: T,
@@ -99,6 +102,89 @@ impl From<LegacyRepository> for Repository {
     }
 }
 
+// ReleaseAsset 尚无 digest 字段时期的缓存格式(镜像 + 回退升级,理由同上)
+#[derive(Debug, Serialize, Deserialize)]
+struct LegacyReleaseAsset {
+    id: u64,
+    name: String,
+    #[serde(default)]
+    size: u64,
+    #[serde(default)]
+    download_count: u64,
+    #[serde(default)]
+    browser_download_url: String,
+    #[serde(default)]
+    content_type: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct LegacyRelease {
+    id: u64,
+    tag_name: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    prerelease: bool,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    created_at: String,
+    #[serde(default)]
+    published_at: String,
+    assets: Vec<LegacyReleaseAsset>,
+}
+
+impl From<LegacyRelease> for crate::github::Release {
+    fn from(legacy: LegacyRelease) -> Self {
+        Self {
+            id: legacy.id,
+            tag_name: legacy.tag_name,
+            name: legacy.name,
+            body: legacy.body,
+            prerelease: legacy.prerelease,
+            draft: legacy.draft,
+            created_at: legacy.created_at,
+            published_at: legacy.published_at,
+            assets: legacy
+                .assets
+                .into_iter()
+                .map(|a| crate::github::ReleaseAsset {
+                    id: a.id,
+                    name: a.name,
+                    size: a.size,
+                    download_count: a.download_count,
+                    browser_download_url: a.browser_download_url,
+                    content_type: a.content_type,
+                    digest: None,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// 升级无 digest 的旧 releases 缓存条目。etag 必须清空:digest 只在 200
+/// 响应体里返回,带着旧 etag 重验证只会得到 304,sha256 将永远填不上;
+/// 清空后下一次 sync 对每个仓库做一次全量取回,即可捕获 digest 并以新格式
+/// 重新入缓存(一次性成本)。
+fn upgrade_legacy_releases(
+    releases: HashMap<String, CacheEntry<Vec<LegacyRelease>>>,
+) -> HashMap<String, CacheEntry<Vec<crate::github::Release>>> {
+    releases
+        .into_iter()
+        .map(|(key, entry)| {
+            (
+                key,
+                CacheEntry {
+                    data: entry.data.into_iter().map(Into::into).collect(),
+                    etag: None,
+                },
+            )
+        })
+        .collect()
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct DataCacheNoParent {
     #[serde(default)]
@@ -106,7 +192,7 @@ struct DataCacheNoParent {
     #[serde(default)]
     trees: HashMap<String, CacheEntry<GitTree>>,
     #[serde(default)]
-    releases: HashMap<String, CacheEntry<Vec<Release>>>,
+    releases: HashMap<String, CacheEntry<Vec<LegacyRelease>>>,
     #[serde(default)]
     contributors: HashMap<String, CacheEntry<Vec<Contributor>>>,
     #[serde(default)]
@@ -130,10 +216,40 @@ impl DataCacheNoParent {
                 })
                 .collect(),
             trees: self.trees,
-            releases: self.releases,
+            releases: upgrade_legacy_releases(self.releases),
             contributors: self.contributors,
             raw_contents: self.raw_contents,
             compares: HashMap::new(),
+        }
+    }
+}
+
+/// ReleaseAsset 尚无 digest 字段时期(Repository 已有 parent)的缓存格式
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct DataCacheNoDigest {
+    #[serde(default)]
+    repositories: HashMap<String, CacheEntry<Repository>>,
+    #[serde(default)]
+    trees: HashMap<String, CacheEntry<GitTree>>,
+    #[serde(default)]
+    releases: HashMap<String, CacheEntry<Vec<LegacyRelease>>>,
+    #[serde(default)]
+    contributors: HashMap<String, CacheEntry<Vec<Contributor>>>,
+    #[serde(default)]
+    raw_contents: HashMap<String, CacheEntry<String>>,
+    #[serde(default)]
+    compares: HashMap<String, CacheEntry<CompareResult>>,
+}
+
+impl DataCacheNoDigest {
+    fn upgrade(self) -> DataCache {
+        DataCache {
+            repositories: self.repositories,
+            trees: self.trees,
+            releases: upgrade_legacy_releases(self.releases),
+            contributors: self.contributors,
+            raw_contents: self.raw_contents,
+            compares: self.compares,
         }
     }
 }
@@ -167,10 +283,25 @@ impl DataCache {
     }
 
     fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
-        if let Ok(cache) = postcard::from_bytes::<DataCache>(bytes) {
+        // 新格式带 magic 头,确定性识别。不能靠"试解 DataCache"识别:
+        // postcard 按字段顺序解码,新结构解旧字节可能错位后"成功"而非
+        // 失败(实测 ReleaseAsset.digest 会吞掉后续 etag 的 Option 标签
+        // 字节),静默产出脏数据
+        if let Some(stripped) = bytes.strip_prefix(CACHE_MAGIC) {
+            let cache = postcard::from_bytes::<DataCache>(stripped)
+                .map_err(|e| format!("postcard decode error: {}", e))?;
             let count = cache.entry_count();
             if count > 0 {
                 info!(entries = count, "Loaded data cache");
+            }
+            return Ok(cache);
+        }
+
+        if let Ok(no_digest) = postcard::from_bytes::<DataCacheNoDigest>(bytes) {
+            let cache = no_digest.upgrade();
+            let count = cache.entry_count();
+            if count > 0 {
+                info!(entries = count, "Loaded pre-digest data cache");
             }
             return Ok(cache);
         }
@@ -213,13 +344,14 @@ impl DataCache {
             return;
         }
 
-        let bytes = match postcard::to_allocvec(self) {
+        let mut bytes = CACHE_MAGIC.to_vec();
+        bytes.extend_from_slice(&match postcard::to_allocvec(self) {
             Ok(b) => b,
             Err(e) => {
                 info!(error = %e, "Failed to serialize cache");
                 return;
             }
-        };
+        });
 
         let file = match File::create(path) {
             Ok(f) => f,
@@ -328,10 +460,100 @@ mod tests {
         assert_eq!(entry.etag.as_deref(), Some("repo-etag"));
     }
 
-    // 现格式字节必须由主路径直接加载,不会走到兜底升级而丢失 compares 数据
+    // ReleaseAsset 尚无 digest 字段时期的缓存通过 DataCacheNoDigest 兜底升级:
+    // releases 数据保留但 etag 被清空,强制下一次 sync 全量取回以捕获 digest
+    #[test]
+    fn loads_pre_digest_cache_and_clears_release_etags() {
+        let pre_digest = DataCacheNoDigest {
+            releases: [(
+                "owner/repo".to_string(),
+                CacheEntry {
+                    data: vec![LegacyRelease {
+                        id: 42,
+                        tag_name: "v1.0.0".to_string(),
+                        name: Some("v1.0.0".to_string()),
+                        body: None,
+                        prerelease: false,
+                        draft: false,
+                        created_at: String::new(),
+                        published_at: "2026-01-01T00:00:00Z".to_string(),
+                        assets: vec![LegacyReleaseAsset {
+                            id: 7,
+                            name: "plugin.jar".to_string(),
+                            size: 123,
+                            download_count: 0,
+                            browser_download_url: String::new(),
+                            content_type: String::new(),
+                        }],
+                    }],
+                    etag: Some("release-etag".to_string()),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            compares: [(
+                "owner/repo/compare/up:main...owner:main".to_string(),
+                CacheEntry {
+                    data: CompareResult {
+                        status: "ahead".to_string(),
+                        ahead_by: 1,
+                        behind_by: 0,
+                    },
+                    etag: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..DataCacheNoDigest::default()
+        };
+        let bytes = postcard::to_allocvec(&pre_digest).unwrap();
+
+        let cache = DataCache::from_bytes(&bytes).unwrap();
+
+        let entry = cache.releases.get("owner/repo").unwrap();
+        assert_eq!(entry.data.len(), 1);
+        assert_eq!(entry.data[0].tag_name, "v1.0.0");
+        assert_eq!(entry.data[0].assets.len(), 1);
+        assert_eq!(entry.data[0].assets[0].name, "plugin.jar");
+        assert!(entry.data[0].assets[0].digest.is_none());
+        assert!(
+            entry.etag.is_none(),
+            "release etag must be cleared to refetch digests"
+        );
+        assert_eq!(cache.compares.len(), 1);
+    }
+
+    // 现格式字节必须由 magic 主路径直接加载,不会走到兜底升级而丢失数据
     #[test]
     fn current_cache_bytes_load_without_downgrade() {
         let current = DataCache {
+            releases: [(
+                "owner/repo".to_string(),
+                CacheEntry {
+                    data: vec![crate::github::Release {
+                        id: 1,
+                        tag_name: "v1".to_string(),
+                        name: None,
+                        body: None,
+                        prerelease: false,
+                        draft: false,
+                        created_at: String::new(),
+                        published_at: String::new(),
+                        assets: vec![crate::github::ReleaseAsset {
+                            id: 2,
+                            name: "p.jar".to_string(),
+                            size: 10,
+                            download_count: 0,
+                            browser_download_url: String::new(),
+                            content_type: String::new(),
+                            digest: Some("sha256:aaaa".to_string()),
+                        }],
+                    }],
+                    etag: Some("etag".to_string()),
+                },
+            )]
+            .into_iter()
+            .collect(),
             compares: [(
                 "owner/repo/compare/up:main...owner:main".to_string(),
                 CacheEntry {
@@ -347,7 +569,8 @@ mod tests {
             .collect(),
             ..DataCache::default()
         };
-        let bytes = postcard::to_allocvec(&current).unwrap();
+        let mut bytes = CACHE_MAGIC.to_vec();
+        bytes.extend_from_slice(&postcard::to_allocvec(&current).unwrap());
 
         let reloaded = DataCache::from_bytes(&bytes).unwrap();
 
@@ -361,6 +584,20 @@ mod tests {
                 .ahead_by,
             1
         );
+        let release = reloaded.releases.get("owner/repo").unwrap();
+        assert_eq!(
+            release.data[0].assets[0].digest.as_deref(),
+            Some("sha256:aaaa")
+        );
+        assert_eq!(release.etag.as_deref(), Some("etag"));
+    }
+
+    // 完全未知形状的字节必须显式报错而非错位误解析(与 magic 设计互为对照:
+    // 认识的格式确定性识别,不认识的格式失败留给 load() 降级为 fresh cache)
+    #[test]
+    fn undecodable_bytes_fail_loudly() {
+        let err = DataCache::from_bytes(&[0xff, 0xfe, 0x00, 0x01]).unwrap_err();
+        assert!(err.contains("postcard decode error"), "got: {err}");
     }
 
     #[test]

@@ -44,6 +44,10 @@ import type ApiV2 from '../src/types/api-v2'
  *   GET /version/{version_id}      single version by globally-unique
  *                                  "owner/name@version_number" id
  *   GET /versions?ids=["owner/name@v",…]  batch version lookup, ≤ 20 ids
+ *   GET /version_file/{hash}       version owning the file with this hash
+ *                                  (lowercase hex, sha1/sha256/sha512
+ *                                  lengths; today the export carries sha256
+ *                                  only — other algorithms 404)
  *   GET /tag/{name}                loader / category / game_version tags
  *   GET /meta                      index metadata
  *
@@ -96,6 +100,8 @@ const TAG_NAMES = new Set(['loader', 'category', 'game_version'])
 const SEGMENT_RE = /^[A-Za-z0-9_.-]+$/
 /** Version slugs as produced by the exporter's toVersionSlug() */
 const VERSION_RE = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/
+/** File-hash lookups: lowercase hex, sha1 / sha256 / sha512 lengths */
+const FILE_HASH_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64}|[0-9a-f]{128})$/
 
 class BadRequestError extends Error {}
 
@@ -932,6 +938,16 @@ async function route(
     case 'versions':
       if (tail.length === 0) return handleVersionsBatch(url, dataFetch)
       return notFound()
+    case 'version_file': {
+      if (tail.length !== 1) return notFound()
+      const hash = decodeSegment(tail[0]).toLowerCase()
+      if (!hash || !FILE_HASH_RE.test(hash)) return notFound()
+      return proxyStaticJson(
+        url,
+        `${VERSION_PREFIX}/version_file/${hash}.json`,
+        dataFetch,
+      )
+    }
     case 'tag':
       if (tail.length === 1 && TAG_NAMES.has(tail[0])) {
         return proxyStaticJson(

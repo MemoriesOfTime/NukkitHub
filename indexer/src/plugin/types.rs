@@ -111,7 +111,7 @@ pub struct Version {
     pub published_at: u64,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct VersionFile {
     #[serde(default)]
     pub filename: String,
@@ -121,6 +121,10 @@ pub struct VersionFile {
     pub size: u64,
     #[serde(default)]
     pub primary: bool,
+    /// GitHub release 资产的 sha256(GitHub digest 字段,仅较新资产提供);
+    /// motci 构建产物与旧资产为 None。仅进 JSON 索引,不进 postcard 缓存
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

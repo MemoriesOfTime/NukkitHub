@@ -207,6 +207,8 @@ declare namespace AllayIndex {
     filename: string
     size: number
     primary: boolean
+    /** sha256 hex from the GitHub release asset digest; absent when the source has none */
+    sha256?: string
   }
 
   /** Member data for template display */

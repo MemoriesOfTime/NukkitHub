@@ -125,7 +125,11 @@ declare namespace ApiV2 {
     primary: boolean
     /** Bytes */
     size: number
-    /** Reserved: always empty for now (the index carries no file hashes) */
+    /**
+     * Checksums keyed by algorithm ("sha256"); `{}` when the source provides
+     * no digest (GitHub only exposes asset digests for recent uploads, and
+     * CI-built artifacts carry none)
+     */
     hashes: Record<string, string>
   }
 
@@ -198,6 +202,8 @@ declare namespace ApiV2 {
       plugins_with_downloads: number
       versions: number
       release_files: number
+      /** Release files whose source provides a digest (populated in files[].hashes) */
+      files_with_hashes: number
       by_loader: Record<string, number>
     }
     /** Field name → deprecation note; empty until a deprecation is announced */

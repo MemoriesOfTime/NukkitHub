@@ -44,6 +44,7 @@ curl -s https://plugins.nukkit-mot.com/api/v2/project/SoBadFish/BedWar/latest.js
 | `GET {api_base}/v2/project/{id}/version/{version_number}`                | 单个版本含文件                                                                               |
 | `GET {api_base}/v2/version/{version_id}`                                 | 按全局唯一版本 id（`{project_id}@{version_number}`）取单个版本                               |
 | `GET {api_base}/v2/versions?ids=["{version_id}",…]`                      | 批量版本查询，≤ 20 个 id；无法解析的 id 会被跳过                                             |
+| `GET {api_base}/v2/version_file/{hash}`                                  | hash 反查（小写十六进制；索引携带 `sha256`），返回拥有该文件的版本；未知 hash 为 404         |
 | `GET {api_base}/v2/project/{id}/latest`                                  | 最新可安装版本：首个非预发布版本，否则最新版本（插件无任何 release 时为 404）                |
 | `GET {api_base}/v2/tag/{name}`                                           | 标签：`loader` / `category` / `game_version`                                                 |
 | `GET {api_base}/v2/meta`                                                 | 索引元数据、计数、规范 `api_base`                                                            |
@@ -52,6 +53,7 @@ curl -s https://plugins.nukkit-mot.com/api/v2/project/SoBadFish/BedWar/latest.js
 | `GET {api_base}/v2/project/{owner}/{name}.json`                          | 项目详情含全部元数据；`versions` 为版本 id 数组，最新在前                                    |
 | `GET {api_base}/v2/project/{owner}/{name}/version.json`                  | 版本列表（裸数组）                                                                           |
 | `GET {api_base}/v2/project/{owner}/{name}/version/{version_number}.json` | 单个版本（裸对象）含文件                                                                     |
+| `GET {api_base}/v2/version_file/{hash}.json`                             | hash 反查的静态形式（每个已索引 sha256 一个文件）                                            |
 | `GET {api_base}/v2/project/{owner}/{name}/latest.json`                   | 最新可安装版本                                                                               |
 | `GET {api_base}/v2/tag/{loader\|category\|game_version}.json`            | 标签文件                                                                                     |
 | `GET {api_base}/v2/meta.json`                                            | 索引元数据、计数、规范 `api_base`                                                            |
@@ -104,11 +106,11 @@ curl -s 'https://plugins.nukkit-mot.com/api/v2/search?facets=%5B%5B%22loaders%3A
 - `GET /v2/project/{id}/version/{version_number}` 与 `/latest`
 - `GET /v2/version/{version_id}` 与 `GET /v2/versions?ids=[…]`（批量，单次
   最多 20 个 id）——版本 id 为 `{project_id}@{version_number}`
+- `GET /v2/version_file/{sha256}`——hash 反查，返回包含该 sha256 文件的版本
 - `GET /v2/tag/*`
 
 设计上不可用：
 
-- `GET /v2/version_file/{hash}`——`files[].hashes` 目前恒为 `{}`
 - 鉴权、用户、团队、通知、收益类端点
 
 ## 响应形状
@@ -158,7 +160,9 @@ curl -s 'https://plugins.nukkit-mot.com/api/v2/search?facets=%5B%5B%22loaders%3A
       "filename": "BedWar_v2.2.3.jar",
       "primary": true,                // 面板应当安装的那个 jar
       "size": 437018,
-      "hashes": {}                    // 保留字段，当前恒为空
+      "hashes": {                     // 按算法名组织的校验和
+        "sha256": "9f86d0…"           // 来源无 digest 时为 {}
+      }
     }
   ],
   "dependencies": [
@@ -180,22 +184,24 @@ curl -s 'https://plugins.nukkit-mot.com/api/v2/search?facets=%5B%5B%22loaders%3A
 这是一个**形状兼容、寻址风格一致的子集，不是可直接替换的替代品**。
 仍然存在的差异：
 
-| Modrinth 能力                                      | 本 API                                                                           | 原因                          |
-| -------------------------------------------------- | -------------------------------------------------------------------------------- | ----------------------------- |
-| `GET /v2/search?query=&facets=&offset=&limit=`     | 同语法的 `/v2/search`；facet key 与排序值为子集（见上文参数表）                  | 索引只有这些维度              |
-| `GET /v2/projects?ids=[…]`                         | 支持（≤ 20 个 id）                                                               | —                             |
-| `GET /v2/versions?ids=[…]`、`GET /v2/version/{id}` | 支持——版本 id 为复合形式 `{project_id}@{version_number}`（版本号只在项目内唯一） | 身份即 GitHub Release         |
-| `GET /v2/version_file/{hash}`                      | 无等价物；`files[].hashes` 为 `{}`                                               | 索引暂无文件 hash             |
-| `featured` 标记 / `?featured` 过滤                 | 以 `latest` 路由替代                                                             | 源数据没有 featured 概念      |
-| `follows` / `followers`                            | 以扩展字段 `stars` 替代                                                          | 无遥测                        |
-| 8 位 base62 id、单段 slug                          | `owner/name` 两段式 id；单段 slug 唯一时可解析                                   | 身份即 GitHub 仓库            |
-| 鉴权、团队、通知、举报、收益                       | 无                                                                               | 只读公开数据，无用户系统      |
-| 限流头、强制 User-Agent                            | 不强制                                                                           | 仍建议附带可识别的 User-Agent |
+| Modrinth 能力                                      | 本 API                                                                           | 原因                                        |
+| -------------------------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------- |
+| `GET /v2/search?query=&facets=&offset=&limit=`     | 同语法的 `/v2/search`；facet key 与排序值为子集（见上文参数表）                  | 索引只有这些维度                            |
+| `GET /v2/projects?ids=[…]`                         | 支持（≤ 20 个 id）                                                               | —                                           |
+| `GET /v2/versions?ids=[…]`、`GET /v2/version/{id}` | 支持——版本 id 为复合形式 `{project_id}@{version_number}`（版本号只在项目内唯一） | 身份即 GitHub Release                       |
+| `GET /v2/version_file/{hash}`                      | 支持 sha256（索引携带的唯一 hash）；sha1/sha512 长度的 hash 请求格式合法但恒 404 | 文件 digest 只有 GitHub 提供，且只有 sha256 |
+| `featured` 标记 / `?featured` 过滤                 | 以 `latest` 路由替代                                                             | 源数据没有 featured 概念                    |
+| `follows` / `followers`                            | 以扩展字段 `stars` 替代                                                          | 无遥测                                      |
+| 8 位 base62 id、单段 slug                          | `owner/name` 两段式 id；单段 slug 唯一时可解析                                   | 身份即 GitHub 仓库                          |
+| 鉴权、团队、通知、举报、收益                       | 无                                                                               | 只读公开数据，无用户系统                    |
+| 限流头、强制 User-Agent                            | 不强制                                                                           | 仍建议附带可识别的 User-Agent               |
 
 ## 数据注意事项
 
 - `downloads` 目前**恒为 0**（保留占位字段）。
-- `files[].hashes` 目前**恒为 `{}`**（保留占位字段）。
+- `files[].hashes` 在来源提供 digest 时携带 `sha256`。GitHub 仅对约 2025 年
+  中之后上传的 Release 资产提供 digest；更早的资产与 `ci-{build}` CI 产物为
+  `"hashes": {}`。覆盖率见 `meta.counts.files_with_hashes`。
 - `version_number` 可直接用作项目内 `/project/{id}/version/{version_number}`
   的路径段；版本 id（`{project_id}@{version_number}`）的两部分也都已路径
   安全——文件名不安全字符已由导出器替换。

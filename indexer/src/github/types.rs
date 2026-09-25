@@ -114,6 +114,11 @@ pub struct ReleaseAsset {
     pub browser_download_url: String,
     #[serde(default)]
     pub content_type: String,
+    // "sha256:<hex>";GitHub 只对约 2025 年中之后上传的资产提供,更早的为 null。
+    // 必须保持为最后一个字段:postcard 缓存按字段顺序反序列化,旧缓存条目
+    // 走 cache.rs 的 LegacyRelease 回退链升级
+    #[serde(default)]
+    pub digest: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

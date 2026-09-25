@@ -8,8 +8,10 @@ import { describe, expect, test } from 'bun:test'
 
 import type AllayIndex from '../src/types/allayhub-index'
 import {
+  buildFiles,
   cleanPlugin,
   compareVersionStrings,
+  fileHashes,
   isTemplatePlaceholder,
   mapProject,
   mapSearchHit,
@@ -220,6 +222,21 @@ describe('toVersionId', () => {
   })
 })
 
+describe('fileHashes', () => {
+  const hex = 'a'.repeat(64)
+  test('well-formed sha256 maps to { sha256 }', () => {
+    expect(fileHashes(hex)).toEqual({ sha256: hex })
+    expect(fileHashes(hex.toUpperCase())).toEqual({ sha256: hex })
+  })
+  test('absent or malformed values degrade to {}', () => {
+    expect(fileHashes(undefined)).toEqual({})
+    expect(fileHashes(null)).toEqual({})
+    expect(fileHashes('')).toEqual({})
+    expect(fileHashes('deadbeef')).toEqual({})
+    expect(fileHashes(`sha256:${hex}`)).toEqual({})
+  })
+})
+
 describe('mapVersion', () => {
   test('maps fields and derives version_type', () => {
     const plugin = makePlugin()
@@ -240,6 +257,221 @@ describe('mapVersion', () => {
     expect(mapped.game_versions).toEqual(['1.0.0'])
     const beta = mapVersion(plugin.versions[1], 'v2.1.0-beta', plugin)
     expect(beta.version_type).toBe('beta')
+  })
+
+  test('maps file sha256 into hashes; malformed values stay {}', () => {
+    const sha256 = 'b'.repeat(64)
+    const plugin = makePlugin({
+      versions: [
+        {
+          version: 'v3.0.0',
+          name: 'v3.0.0',
+          prerelease: false,
+          changelog: '',
+          downloads: 0,
+          published_at: 1735689600,
+          files: [
+            {
+              filename: 'ok.jar',
+              url: 'https://example.com/ok.jar',
+              size: 1,
+              primary: true,
+              sha256,
+            },
+            {
+              filename: 'bad.jar',
+              url: 'https://example.com/bad.jar',
+              size: 1,
+              primary: false,
+              sha256: 'nope',
+            },
+            {
+              filename: 'none.jar',
+              url: 'https://example.com/none.jar',
+              size: 1,
+              primary: false,
+            },
+          ],
+        },
+      ],
+    })
+    const mapped = mapVersion(plugin.versions[0], 'v3.0.0', plugin)
+    expect(mapped.files[0].hashes).toEqual({ sha256 })
+    expect(mapped.files[1].hashes).toEqual({})
+    expect(mapped.files[2].hashes).toEqual({})
+  })
+})
+
+describe('buildFiles: version_file hash lookups', () => {
+  const SHA_NEW = 'c'.repeat(64)
+  const SHA_OLD = 'd'.repeat(64)
+  const SHA_DUP = 'e'.repeat(64)
+
+  function hashedPlugin(): AllayIndex.Plugin {
+    return makePlugin({
+      versions: [
+        {
+          // newest version: its own asset + a re-upload of the old asset
+          version: 'v3.0.0',
+          name: 'v3.0.0',
+          prerelease: false,
+          changelog: '',
+          downloads: 0,
+          published_at: 1735689600,
+          files: [
+            {
+              filename: 'p-3.jar',
+              url: 'https://example.com/p-3.jar',
+              size: 3,
+              primary: true,
+              sha256: SHA_NEW,
+            },
+            {
+              filename: 'p-2.jar',
+              url: 'https://example.com/p-2.jar',
+              size: 2,
+              primary: false,
+              sha256: SHA_DUP,
+            },
+          ],
+        },
+        {
+          // older version: unhashed asset + the same re-uploaded asset
+          version: 'v2.0.0',
+          name: 'v2.0.0',
+          prerelease: false,
+          changelog: '',
+          downloads: 0,
+          published_at: 1600000000,
+          files: [
+            {
+              filename: 'p-old.jar',
+              url: 'https://example.com/p-old.jar',
+              size: 1,
+              primary: true,
+            },
+            {
+              filename: 'p-2.jar',
+              url: 'https://example.com/p-2.jar',
+              size: 2,
+              primary: false,
+              sha256: SHA_DUP,
+            },
+          ],
+        },
+        // third distinct hash on a prerelease
+        {
+          version: 'v1.0.0',
+          name: 'v1.0.0',
+          prerelease: true,
+          changelog: '',
+          downloads: 0,
+          published_at: 1500000000,
+          files: [
+            {
+              filename: 'p-1.jar',
+              url: 'https://example.com/p-1.jar',
+              size: 1,
+              primary: true,
+              sha256: SHA_OLD,
+            },
+          ],
+        },
+      ],
+    })
+  }
+
+  test('emits one lookup file per distinct hash, resolving dupes to the newest version', () => {
+    const { files, stats } = buildFiles(
+      [hashedPlugin()],
+      'https://example.com/api',
+    )
+    const byPath = new Map(files.map((f) => [f.relPath, f.content]))
+
+    // 4 files with hashes (3 distinct values, one shared across versions)
+    expect(stats.filesWithHashes).toBe(4)
+    expect(stats.hashLookupFiles).toBe(3)
+    for (const sha of [SHA_NEW, SHA_OLD, SHA_DUP]) {
+      expect(byPath.has(`v2/version_file/${sha}.json`)).toBe(true)
+    }
+
+    // each lookup body is the owning version (dup hash → newest, v3.0.0)
+    const newest = JSON.parse(
+      byPath.get(`v2/version_file/${SHA_DUP}.json`)!,
+    ) as {
+      version_number: string
+    }
+    expect(newest.version_number).toBe('v3.0.0')
+    const other = JSON.parse(
+      byPath.get(`v2/version_file/${SHA_OLD}.json`)!,
+    ) as {
+      version_number: string
+    }
+    expect(other.version_number).toBe('v1.0.0')
+
+    // meta carries the coverage count
+    const meta = JSON.parse(byPath.get('v2/meta.json')!) as {
+      counts: { files_with_hashes: number }
+    }
+    expect(meta.counts.files_with_hashes).toBe(4)
+  })
+
+  test('plugins without digests emit no version_file entries', () => {
+    const { files, stats } = buildFiles(
+      [makePlugin()],
+      'https://example.com/api',
+    )
+    expect(stats.filesWithHashes).toBe(0)
+    expect(stats.hashLookupFiles).toBe(0)
+    expect(files.some((f) => f.relPath.startsWith('v2/version_file/'))).toBe(
+      false,
+    )
+  })
+
+  // same asset released by two repos (maintainer move / re-upload): the
+  // winner must be the more recently updated project regardless of the
+  // order plugins come in — the export must be machine-reproducible
+  test('cross-plugin duplicate hash resolves to the most recently updated project', () => {
+    const pluginFor = (id: string, updatedAt: number): AllayIndex.Plugin =>
+      makePlugin({
+        id,
+        source: `https://github.com/${id}`,
+        updated_at: updatedAt,
+        versions: [
+          {
+            version: 'v1.0.0',
+            name: 'v1.0.0',
+            prerelease: false,
+            changelog: '',
+            downloads: 0,
+            published_at: updatedAt,
+            files: [
+              {
+                filename: 'p.jar',
+                url: `https://example.com/${id}/p.jar`,
+                size: 1,
+                primary: true,
+                sha256: SHA_DUP,
+              },
+            ],
+          },
+        ],
+      })
+    const stale = pluginFor('old/moved-from', 1_600_000_000)
+    const fresh = pluginFor('new/moved-to', 1_700_000_000)
+
+    // both argument orders must produce the identical winner
+    for (const input of [
+      [stale, fresh],
+      [fresh, stale],
+    ] as const) {
+      const { files } = buildFiles([...input], 'https://example.com/api')
+      const body = JSON.parse(
+        files.find((f) => f.relPath === `v2/version_file/${SHA_DUP}.json`)!
+          .content,
+      ) as { project_id: string }
+      expect(body.project_id).toBe('new/moved-to')
+    }
   })
 })
 

@@ -65,6 +65,17 @@ pub struct JenkinsBuildInfo {
     pub artifacts: Vec<(String, String)>, // (filename, relative_path)
 }
 
+/// Jenkins 构建产物直链: {job_url}{build}/artifact/{relative_path}
+/// (无需认证;job_url 带或不带尾部斜杠均可)
+pub fn artifact_url(job_url: &str, build_number: u64, relative_path: &str) -> String {
+    format!(
+        "{}/{}/artifact/{}",
+        job_url.trim_end_matches('/'),
+        build_number,
+        relative_path
+    )
+}
+
 pub struct JenkinsIndex {
     builds: HashMap<String, JenkinsBuildInfo>, // repo_full_name -> build info
 }
@@ -218,4 +229,144 @@ fn normalize_scm_url(url: &str) -> Option<String> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        JenkinsAction, JenkinsArtifact, JenkinsBuild, JenkinsBuildInfo, JenkinsJob, artifact_url,
+        extract_repo_from_build, normalize_scm_url, process_job,
+    };
+    use std::collections::HashMap;
+
+    #[test]
+    fn normalizes_github_scm_urls() {
+        assert_eq!(
+            normalize_scm_url("https://github.com/LT-Name/Radio.git"),
+            Some("lt-name/radio".to_string())
+        );
+        assert_eq!(
+            normalize_scm_url("http://github.com/Owner/Repo/"),
+            Some("owner/repo".to_string())
+        );
+        assert_eq!(
+            normalize_scm_url("git@github.com:MemoriesOfTime/EconomyAPI.git"),
+            Some("memoriesoftime/economyapi".to_string())
+        );
+        assert_eq!(normalize_scm_url("https://gitlab.com/foo/bar"), None);
+        assert_eq!(normalize_scm_url("https://github.com/only-owner"), None);
+    }
+
+    #[test]
+    fn artifact_url_handles_trailing_slash() {
+        assert_eq!(
+            artifact_url(
+                "https://motci.cn/job/Radio/",
+                9,
+                "target/Radio-1.2.0-SNAPSHOT.jar"
+            ),
+            "https://motci.cn/job/Radio/9/artifact/target/Radio-1.2.0-SNAPSHOT.jar"
+        );
+        assert_eq!(
+            artifact_url(
+                "https://motci.cn/job/EconomyAPI",
+                23,
+                "target/EconomyAPI.jar"
+            ),
+            "https://motci.cn/job/EconomyAPI/23/artifact/target/EconomyAPI.jar"
+        );
+    }
+
+    fn build_with(remote_url: &str, artifacts: &[&str]) -> JenkinsBuild {
+        JenkinsBuild {
+            number: 5,
+            timestamp: 1_000,
+            artifacts: artifacts
+                .iter()
+                .map(|a| JenkinsArtifact {
+                    file_name: (*a).to_string(),
+                    relative_path: format!("target/{a}"),
+                })
+                .collect(),
+            actions: vec![JenkinsAction {
+                class: "hudson.plugins.git.util.BuildData".to_string(),
+                remote_urls: Some(vec![remote_url.to_string()]),
+            }],
+        }
+    }
+
+    #[test]
+    fn extracts_repo_from_build_data() {
+        let build = build_with("https://github.com/LT-Name/Radio.git", &["Radio.jar"]);
+        assert_eq!(
+            extract_repo_from_build(&build),
+            Some("lt-name/radio".to_string())
+        );
+    }
+
+    #[test]
+    fn folder_job_prefers_master_sub_job() {
+        let mut master = JenkinsJob {
+            name: "master".to_string(),
+            url: "https://motci.cn/job/Foo/master/".to_string(),
+            last_successful_build: Some(build_with(
+                "https://github.com/foo/bar.git",
+                &["Bar-1.0.jar"],
+            )),
+            jobs: None,
+        };
+        master.last_successful_build.as_mut().unwrap().number = 42;
+
+        let dev = JenkinsJob {
+            name: "dev".to_string(),
+            url: "https://motci.cn/job/Foo/dev/".to_string(),
+            last_successful_build: Some(build_with(
+                "https://github.com/foo/bar.git",
+                &["Bar-2.0.jar"],
+            )),
+            jobs: None,
+        };
+
+        let folder = JenkinsJob {
+            name: "Foo".to_string(),
+            url: "https://motci.cn/job/Foo/".to_string(),
+            last_successful_build: None,
+            jobs: Some(vec![dev, master]),
+        };
+
+        let mut builds = HashMap::<String, JenkinsBuildInfo>::new();
+        process_job(&folder, &mut builds);
+
+        let info = builds.get("foo/bar").expect("indexed");
+        assert_eq!(info.build_number, 42);
+    }
+
+    #[test]
+    fn skips_jobs_without_artifacts_or_scm() {
+        let no_artifacts = JenkinsJob {
+            name: "Empty".to_string(),
+            url: "https://motci.cn/job/Empty/".to_string(),
+            last_successful_build: Some(build_with("https://github.com/a/b.git", &[])),
+            jobs: None,
+        };
+        let no_scm = JenkinsJob {
+            name: "NoScm".to_string(),
+            url: "https://motci.cn/job/NoScm/".to_string(),
+            last_successful_build: Some(JenkinsBuild {
+                number: 1,
+                timestamp: 0,
+                artifacts: vec![JenkinsArtifact {
+                    file_name: "x.jar".to_string(),
+                    relative_path: "x.jar".to_string(),
+                }],
+                actions: Vec::new(),
+            }),
+            jobs: None,
+        };
+
+        let mut builds = HashMap::<String, JenkinsBuildInfo>::new();
+        process_job(&no_artifacts, &mut builds);
+        process_job(&no_scm, &mut builds);
+        assert!(builds.is_empty());
+    }
 }

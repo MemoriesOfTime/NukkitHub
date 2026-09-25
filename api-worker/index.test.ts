@@ -10,7 +10,7 @@
  */
 
 /// <reference types="bun-types" />
-import { describe, expect, test } from 'bun:test'
+import {describe, expect, test} from 'bun:test'
 
 import {
   buildSlugIndex,
@@ -26,7 +26,7 @@ import {
   parseStringArrayParam,
   parseVersionId,
   type SearchHit,
-  sortHits
+  sortHits,
 } from './index'
 
 // ---------------------------------------------------------------------------
@@ -618,6 +618,61 @@ describe('worker fetch handler: suffixless version routes', () => {
     expect((await call(`/api/v2/versions?ids=${many}`, fetch_)).status).toBe(
       400,
     )
+  })
+})
+
+describe('worker fetch handler: version_file hash lookup', () => {
+  const SHA256 = 'a'.repeat(64)
+  function hashFetch(): DatasetFetch & { requests: Request[] } {
+    return makeOriginFetch({
+      [`/api/v2/version_file/${SHA256}.json`]: JSON.stringify({
+        id: 'a/one@v2',
+        files: [{ hashes: { sha256: SHA256 } }],
+      }),
+    })
+  }
+
+  test('valid sha256 proxies the static version_file body', async () => {
+    const dataFetch = hashFetch()
+    const res = await call(`/api/v2/version_file/${SHA256}`, dataFetch)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ id: 'a/one@v2' })
+    expect(new URL(dataFetch.requests[0].url).pathname).toBe(
+      `/api/v2/version_file/${SHA256}.json`,
+    )
+  })
+  test('uppercase hex normalizes to lowercase before proxying', async () => {
+    const dataFetch = hashFetch()
+    const res = await call(
+      `/api/v2/version_file/${SHA256.toUpperCase()}`,
+      dataFetch,
+    )
+    expect(res.status).toBe(200)
+    expect(new URL(dataFetch.requests[0].url).pathname).toBe(
+      `/api/v2/version_file/${SHA256}.json`,
+    )
+  })
+  test('sha1/sha512-length hex proxy too (404 when not in the export)', async () => {
+    const dataFetch = hashFetch()
+    const sha1 = 'b'.repeat(40)
+    const res = await call(`/api/v2/version_file/${sha1}`, dataFetch)
+    expect(res.status).toBe(404) // valid shape, unknown hash → static 404
+    expect(new URL(dataFetch.requests[0].url).pathname).toBe(
+      `/api/v2/version_file/${sha1}.json`,
+    )
+  })
+  test('non-hex, wrong-length, nested paths → 404 without a subrequest', async () => {
+    const dataFetch = hashFetch()
+    for (const path of [
+      `/api/v2/version_file/${SHA256}z`, // non-hex char
+      '/api/v2/version_file/deadbeef', // wrong length
+      `/api/v2/version_file/${SHA256}/extra`,
+      '/api/v2/version_file/..%2Fsearch',
+    ]) {
+      const res = await call(path, dataFetch)
+      expect(res.status).toBe(404)
+    }
+    expect(dataFetch.requests).toHaveLength(0)
   })
 })
 

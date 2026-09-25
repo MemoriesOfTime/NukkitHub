@@ -254,6 +254,17 @@ function mapGalleryItem(item: AllayIndex.GalleryImage): ApiV2.GalleryImage {
   }
 }
 
+/**
+ * files[].hashes from the index file's sha256. The indexer only emits
+ * well-formed digests, but the source is a JSON file on disk — malformed
+ * values degrade to {} instead of poisoning the output.
+ */
+export function fileHashes(sha256: unknown): ApiV2.VersionFile['hashes'] {
+  if (typeof sha256 !== 'string') return {}
+  const hex = sha256.toLowerCase()
+  return /^[0-9a-f]{64}$/.test(hex) ? { sha256: hex } : {}
+}
+
 export function mapVersion(
   raw: AllayIndex.RawVersion,
   slug: string,
@@ -276,7 +287,7 @@ export function mapVersion(
       filename: str(f?.filename),
       primary: f?.primary === true,
       size: num(f?.size),
-      hashes: {},
+      hashes: fileHashes(f?.sha256),
     })),
     dependencies: (plugin.dependencies ?? []).map(mapDependency),
   }
@@ -484,12 +495,16 @@ interface BuildStats {
   pluginsWithDownloads: number
   versions: number
   releaseFiles: number
+  filesWithHashes: number
+  /** Distinct sha256 values (version_file/ emits one file per distinct hash) */
+  hashLookupFiles: number
   byLoader: Record<string, number>
   fileCount: number
   searchBytes: number
 }
 
-function buildFiles(
+/** Pure in-memory build: plugins → output files + stats (exported for tests) */
+export function buildFiles(
   plugins: readonly AllayIndex.Plugin[],
   apiBase: string,
 ): { files: OutputFile[]; stats: BuildStats } {
@@ -545,6 +560,7 @@ function buildFiles(
     }
   })
 
+  // ---- per-plugin files ---------------------------------------------------
   for (const p of prepared) {
     const [owner, name] = p.plugin.id.split('/')
     const base = `v2/project/${owner}/${name}`
@@ -563,6 +579,37 @@ function buildFiles(
     if (bTime !== aTime) return bTime - aTime
     return a.plugin.id.localeCompare(b.plugin.id)
   })
+
+  // ---- per-hash reverse-lookup files -------------------------------------
+  // v2/version_file/{sha256}.json carries the same body as the owning
+  // version (Modrinth's /version_file/{hash} returns the version). The same
+  // asset re-uploaded across releases or repos resolves deterministically to
+  // the newest version (byRecency order here, sorted desc within a plugin —
+  // never the index directory's filesystem order, which would make the
+  // output non-reproducible across machines).
+  let filesWithHashes = 0
+  for (const p of prepared) {
+    for (const v of p.mapped) {
+      for (const f of v.files) {
+        if (f.hashes.sha256) filesWithHashes += 1
+      }
+    }
+  }
+  const hashBodies = new Map<string, string>()
+  for (const p of byRecency) {
+    for (const v of p.mapped) {
+      for (const f of v.files) {
+        const sha256 = f.hashes.sha256
+        if (sha256 && !hashBodies.has(sha256)) {
+          hashBodies.set(sha256, jsonContent(v))
+        }
+      }
+    }
+  }
+  for (const [sha256, body] of hashBodies) {
+    add(`v2/version_file/${sha256}.json`, body)
+  }
+
   const searchResponse = (hits: ApiV2.SearchHit[]): ApiV2.SearchResponse => ({
     offset: 0,
     limit: hits.length,
@@ -627,6 +674,7 @@ function buildFiles(
       plugins_with_downloads: withDownloads,
       versions: versionCount,
       release_files: releaseFiles,
+      files_with_hashes: filesWithHashes,
       by_loader: Object.fromEntries(
         LOADERS.map((l) => [l.name, byLoader[l.name] ?? 0]),
       ),
@@ -645,6 +693,8 @@ function buildFiles(
       pluginsWithDownloads: withDownloads,
       versions: versionCount,
       releaseFiles,
+      filesWithHashes,
+      hashLookupFiles: hashBodies.size,
       byLoader,
       fileCount: files.length,
       searchBytes: Buffer.byteLength(searchJson),
@@ -683,6 +733,10 @@ function renderIndexPage(apiBase: string): string {
     [
       'v2/versions?ids= (dynamic)',
       'Batch version lookup by version ids, up to 20 (Modrinth syntax)',
+    ],
+    [
+      'v2/version_file/{sha256} (dynamic)',
+      'Version owning the file with this hash (sha256; unknown hashes 404)',
     ],
     [
       'v2/project/{owner}/{name} (dynamic)',
@@ -797,8 +851,52 @@ function verify(
     errors.push('meta.versions mismatch')
   if (meta.counts.release_files !== stats.releaseFiles)
     errors.push('meta.release_files mismatch')
+  if (meta.counts.files_with_hashes !== stats.filesWithHashes) {
+    errors.push('meta.files_with_hashes mismatch')
+  }
   if (meta.counts.plugins_with_downloads !== stats.pluginsWithDownloads) {
     errors.push('meta.plugins_with_downloads mismatch')
+  }
+
+  // version_file/{sha256}.json: each lookup file must parse as the version
+  // that owns the hash (the guarantee the /version_file/{hash} endpoint
+  // gives consumers), and the count must match the distinct-hash stats
+  const versionFileDir = join(outDir, 'v2/version_file')
+  const hashFiles = existsSync(versionFileDir)
+    ? readdirSync(versionFileDir).filter((f) => f.endsWith('.json'))
+    : []
+  if (hashFiles.length !== stats.hashLookupFiles) {
+    errors.push(
+      `version_file count mismatch: wrote ${stats.hashLookupFiles}, found ${hashFiles.length} on disk`,
+    )
+  }
+  let recountedFilesWithHashes = 0
+  for (const hashFile of hashFiles) {
+    const sha256 = hashFile.replace(/\.json$/, '')
+    if (!/^[0-9a-f]{64}$/.test(sha256)) {
+      errors.push(`version_file: malformed hash filename "${hashFile}"`)
+      continue
+    }
+    const body = JSON.parse(
+      readFileSync(join(versionFileDir, hashFile), 'utf8'),
+    ) as ApiV2.Version
+    if (!body.files.some((f) => f.hashes.sha256 === sha256)) {
+      errors.push(
+        `version_file/${sha256}: body does not contain the hashed file`,
+      )
+    }
+  }
+  for (const plugin of plugins) {
+    for (const version of plugin.versions ?? []) {
+      for (const file of version.files ?? []) {
+        if (fileHashes(file.sha256).sha256) recountedFilesWithHashes += 1
+        else if (file.sha256)
+          warn(`${plugin.id}: malformed sha256 for "${file.filename}"`)
+      }
+    }
+  }
+  if (recountedFilesWithHashes !== stats.filesWithHashes) {
+    errors.push('files_with_hashes recount mismatch')
   }
 
   // search envelope
@@ -1003,7 +1101,7 @@ function main(): void {
   console.log(
     [
       `Done: ${stats.fileCount} files → ${relative(process.cwd(), outDir) || '.'}`,
-      `  plugins=${stats.plugins} with_downloads=${stats.pluginsWithDownloads} versions=${stats.versions} files=${stats.releaseFiles}`,
+      `  plugins=${stats.plugins} with_downloads=${stats.pluginsWithDownloads} versions=${stats.versions} files=${stats.releaseFiles} hashed=${stats.filesWithHashes}`,
       `  by_loader=${JSON.stringify(stats.byLoader)}`,
       `  search.json=${(stats.searchBytes / 1024).toFixed(0)} KiB, api_base=${apiBase}`,
     ]

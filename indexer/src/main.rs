@@ -1,4 +1,5 @@
 use nukkitindexer::github::{client, init_client};
+use nukkitindexer::jenkins::init_jenkins;
 use nukkitindexer::plugin::{delete_plugin, load_plugins, write_plugin};
 use nukkitindexer::search::build_orama_index;
 use nukkitindexer::sync::{clear_discover_progress, discover_new_plugins, update_existing_plugins};
@@ -146,6 +147,7 @@ fn cmd_update(args: &[String]) {
         error!(error = %e, "Failed to create client");
         process::exit(1);
     }
+    init_jenkins();
 
     let dry_run = has_flag(args, "--dry-run");
     let force = has_flag(args, "--force");
@@ -258,6 +260,7 @@ fn cmd_discover(args: &[String]) {
         error!(error = %e, "Failed to create client");
         process::exit(1);
     }
+    init_jenkins();
 
     let dry_run = has_flag(args, "--dry-run");
     let force = has_flag(args, "--force");

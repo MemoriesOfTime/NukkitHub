@@ -47,6 +47,7 @@ rebuilds hourly and deploys trail it.
 | `GET {api_base}/v2/project/{id}/version/{version_number}`                | Single version with files                                                                                               |
 | `GET {api_base}/v2/version/{version_id}`                                 | Single version by globally-unique version id (`{project_id}@{version_number}`)                                          |
 | `GET {api_base}/v2/versions?ids=["{version_id}",…]`                      | Batch version lookup, ≤ 20 ids; unresolvable ids are skipped                                                            |
+| `GET {api_base}/v2/version_file/{hash}`                                  | Version owning the file with this hash (lowercase hex; the index carries `sha256`) — 404 when unknown                   |
 | `GET {api_base}/v2/project/{id}/latest`                                  | Latest installable version: first non-prerelease, else newest (404 if the plugin has no releases)                       |
 | `GET {api_base}/v2/tag/{name}`                                           | Tags: `loader` / `category` / `game_version`                                                                            |
 | `GET {api_base}/v2/meta`                                                 | Index metadata, counts, canonical `api_base`                                                                            |
@@ -55,14 +56,21 @@ rebuilds hourly and deploys trail it.
 | `GET {api_base}/v2/project/{owner}/{name}.json`                          | Project detail with all metadata; `versions` lists version ids newest-first                                             |
 | `GET {api_base}/v2/project/{owner}/{name}/version.json`                  | Version list (bare array)                                                                                               |
 | `GET {api_base}/v2/project/{owner}/{name}/version/{version_number}.json` | Single version with files                                                                                               |
+| `GET {api_base}/v2/version_file/{hash}.json`                             | Static form of the hash lookup (one file per indexed sha256)                                                            |
 | `GET {api_base}/v2/project/{owner}/{name}/latest.json`                   | Latest installable version                                                                                              |
 | `GET {api_base}/v2/tag/{loader\|category\|game_version}.json`            | Tag files                                                                                                               |
 | `GET {api_base}/v2/meta.json`                                            | Index metadata, counts, canonical `api_base`                                                                            |
 
 `{owner}/{name}` is the GitHub-derived id (multi-module repositories use
-`owner/repo--module-suffix`). Plugin ids with no indexed GitHub Release simply
-have an empty `versions` array and no `latest`. Visiting `{api_base}/` serves
-a small human-readable endpoint index page.
+`owner/repo--module-suffix`). Plugin ids with no indexed downloads (no GitHub
+Release and no CI build) simply have an empty `versions` array and no
+`latest`. Visiting `{api_base}/` serves a small human-readable endpoint index
+page.
+
+Version numbers come from GitHub Release tags. Additionally, repositories that
+build on [motci.cn](https://motci.cn) carry one snapshot version numbered
+`ci-{build}` (`version_type: "beta"`) whose files point at the Jenkins build
+artifacts. `latest` still prefers a non-prerelease release when one exists.
 
 Version numbers are only unique **within** a project, so the globally-unique
 version id is the composite `{project_id}@{version_number}` — for example
@@ -109,11 +117,12 @@ Works out of the box:
 - `GET /v2/project/{id}/version/{version_number}` and `/latest`
 - `GET /v2/version/{version_id}` and `GET /v2/versions?ids=[…]` (batch, max 20
   ids) — version ids are `{project_id}@{version_number}`
+- `GET /v2/version_file/{sha256}` — reverse hash lookup, returns the version
+  whose files include this sha256
 - `GET /v2/tag/*`
 
 Does not work, by design:
 
-- `GET /v2/version_file/{hash}` — `files[].hashes` is always `{}` today
 - authentication, user, team, notification, and payout endpoints
 
 ## Shapes
@@ -152,7 +161,7 @@ The field names and structure follow Modrinth v2. Quick orientation:
   "name": "2023/08/27 v2.2.3 更新",
   "version_number": "v2.2.3",
   "changelog": "…",
-  "version_type": "release",          // "beta" when the GitHub release is a prerelease
+  "version_type": "release",          // "beta" for GitHub prereleases and ci-* snapshots
   "date_published": "2024-08-27T04:01:38.000Z",
   "downloads": 0,
   "loaders": ["nkx", "nkmot"],        // inherited from the project
@@ -163,7 +172,9 @@ The field names and structure follow Modrinth v2. Quick orientation:
       "filename": "BedWar_v2.2.3.jar",
       "primary": true,                // the jar a panel should install
       "size": 437018,
-      "hashes": {}                    // reserved, currently always empty
+      "hashes": {                     // checksums by algorithm
+        "sha256": "9f86d0…"           // {} when the source has no digest
+      }
     }
   ],
   "dependencies": [
@@ -190,7 +201,7 @@ drop-in replacement**. What remains different:
 | `GET /v2/search?query=&facets=&offset=&limit=`     | `/v2/search` with the same syntax; facet keys and sort values are a subset (see the parameter table)                       | The index only carries those dimensions       |
 | `GET /v2/projects?ids=[…]`                         | Supported (≤ 20 ids)                                                                                                       | —                                             |
 | `GET /v2/versions?ids=[…]`, `GET /v2/version/{id}` | Supported — version ids are `{project_id}@{version_number}` composites (version numbers alone are only unique per project) | Identity is the GitHub release                |
-| `GET /v2/version_file/{hash}`                      | No equivalent; `files[].hashes` is `{}`                                                                                    | The index carries no file hashes yet          |
+| `GET /v2/version_file/{hash}`                      | Supported for `sha256` (the only hash the index carries); `sha1`/`sha512`-length hashes are accepted but always 404        | Only GitHub exposes file digests, sha256 only |
 | `featured` flag / `?featured` filter               | `latest` route instead                                                                                                     | No featured concept in the source data        |
 | `follows` / `followers`                            | Extension field `stars` instead                                                                                            | No telemetry                                  |
 | 8-char base62 ids, single-segment slugs            | `owner/name` two-segment ids; single-segment slugs resolve when unique                                                     | Identity is the GitHub repository             |
@@ -200,7 +211,10 @@ drop-in replacement**. What remains different:
 ## Data caveats
 
 - `downloads` is **always 0** today (reserved placeholder).
-- `files[].hashes` is **always `{}`** (reserved placeholder).
+- `files[].hashes` carries `sha256` where the source provides a digest.
+  GitHub only exposes digests for release assets uploaded since mid-2025;
+  older assets, and `ci-{build}` CI artifacts, have `"hashes": {}`. The
+  `meta.counts.files_with_hashes` figure tracks the coverage.
 - `version_number` is usable directly as the project-scoped
   `/project/{id}/version/{version_number}` path segment; both parts of a
   version id (`{project_id}@{version_number}`) are already path-safe —

@@ -2,6 +2,7 @@ mod image;
 mod link;
 
 use crate::github::{Contributor, GitTreeEntry, Release, Repository, client};
+use crate::jenkins::{JenkinsBuildInfo, artifact_url};
 use crate::plugin::{
     Author, Dependency, GalleryItem, License, Links, Plugin, Version, VersionFile,
 };
@@ -720,6 +721,128 @@ fn resolve_authors(repo: &Repository, contributors: &[Contributor]) -> Vec<Autho
     }]
 }
 
+/// 判断 jar 文件名主干是否以 `name` 开头且落在词边界上
+/// (避免 "Coin" 误匹配 "CoinSystem")。
+fn jar_name_matches(stem: &str, name: &str) -> bool {
+    let stem = stem.to_lowercase();
+    let name = name.trim().to_lowercase();
+    if name.is_empty() {
+        return false;
+    }
+    match stem.strip_prefix(&name) {
+        Some(rest) => rest.is_empty() || rest.starts_with(['-', '_', '.', ' ']),
+        None => false,
+    }
+}
+
+/// 提取 GitHub digest 字段中的 sha256 hex("sha256:<64 位十六进制>")。
+/// 未知算法、缺失或格式异常返回 None,不影响索引其余字段。
+fn sha256_from_digest(digest: Option<&str>) -> Option<String> {
+    let hex = digest?.strip_prefix("sha256:")?.to_lowercase();
+    if hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Some(hex)
+    } else {
+        None
+    }
+}
+
+/// 从 jar 文件名主干提取展示名:匹配到的名称前缀之后的版本部分,
+/// 如 "Radio-1.2.0-SNAPSHOT" + "Radio" -> "1.2.0-SNAPSHOT";提取不出则回退主干。
+fn jar_display_name(stem: &str, names: &[&str]) -> String {
+    for name in names {
+        let lower_stem = stem.to_lowercase();
+        let lower_name = name.trim().to_lowercase();
+        if let Some(rest) = lower_stem.strip_prefix(&lower_name)
+            && (rest.is_empty() || rest.starts_with(['-', '_', '.', ' ']))
+        {
+            let cut = stem.len() - rest.len();
+            let display = stem[cut..].trim_start_matches(['-', '_', '.', ' ']);
+            if !display.is_empty() {
+                return display.to_string();
+            }
+        }
+    }
+    stem.to_string()
+}
+
+/// 将 motci.cn 的最近成功构建合成为一条快照版本:
+/// - version 形如 `ci-{build}`,prerelease = true,追加在 GitHub Release 版本之后;
+/// - 时间戳为 Jenkins 毫秒,转换为秒;
+/// - 多模块仓库只认领文件名与插件名/仓库名边界匹配的 jar,认领不到则不合成;
+/// - published_at 不参与 project_updated_timestamp,避免 CI 构建刷"最近更新"。
+/// 可安装的 jar:Maven 的 -sources / -javadoc 附件不是插件,面板装上即坏,
+/// 单模块"认领全部 jar"与多模块的名称匹配都必须排除。
+fn is_installable_jar(filename: &str) -> bool {
+    let lower = filename.to_lowercase();
+    lower.ends_with(".jar")
+        && !lower
+            .strip_suffix(".jar")
+            .is_some_and(|stem| stem.ends_with("-sources") || stem.ends_with("-javadoc"))
+}
+
+fn compose_motci_snapshot(
+    build: &JenkinsBuildInfo,
+    plugin_name: &str,
+    repo_name: &str,
+    is_multi_module: bool,
+) -> Option<Version> {
+    let jars: Vec<&(String, String)> = build
+        .artifacts
+        .iter()
+        .filter(|(filename, _)| is_installable_jar(filename))
+        .collect();
+
+    if jars.is_empty() {
+        return None;
+    }
+
+    let matched: Vec<&(String, String)> = if is_multi_module {
+        let matched: Vec<_> = jars
+            .iter()
+            .copied()
+            .filter(|(filename, _)| {
+                let stem = filename.trim_end_matches(".jar");
+                jar_name_matches(stem, plugin_name) || jar_name_matches(stem, repo_name)
+            })
+            .collect();
+        if matched.is_empty() {
+            debug!(
+                build = build.build_number,
+                "No motci artifact matches plugin name, skipping snapshot"
+            );
+            return None;
+        }
+        matched
+    } else {
+        jars
+    };
+
+    let names = [plugin_name, repo_name];
+    let display_name = matched
+        .first()
+        .map(|(filename, _)| jar_display_name(filename.trim_end_matches(".jar"), &names))
+        .unwrap_or_else(|| format!("ci-{}", build.build_number));
+
+    Some(Version {
+        version: format!("ci-{}", build.build_number),
+        name: display_name,
+        prerelease: true,
+        changelog: String::new(),
+        files: matched
+            .iter()
+            .map(|(filename, relative_path)| VersionFile {
+                filename: filename.clone(),
+                url: artifact_url(&build.job_url, build.build_number, relative_path),
+                size: 0,
+                primary: true,
+                sha256: None,
+            })
+            .collect(),
+        downloads: 0,
+        published_at: build.timestamp / 1000,
+    })
+}
+
 fn nukkit_yml_to_plugin(
     yml: crate::nukkit::NukkitPluginYml,
     repo: &Repository,
@@ -765,7 +888,7 @@ fn nukkit_yml_to_plugin(
     }));
 
     // Build versions from releases
-    let versions: Vec<Version> = releases
+    let mut versions: Vec<Version> = releases
         .iter()
         .filter_map(|release| {
             let files: Vec<VersionFile> = release
@@ -777,6 +900,7 @@ fn nukkit_yml_to_plugin(
                     url: a.browser_download_url.clone(),
                     size: a.size,
                     primary: true,
+                    sha256: sha256_from_digest(a.digest.as_deref()),
                 })
                 .collect();
 
@@ -821,6 +945,20 @@ fn nukkit_yml_to_plugin(
     } else {
         yml.name.trim().to_string()
     };
+
+    // motci CI 快照:GitHub 数据为准,motci 命中的仓库追加一条快照下载版本
+    if let Some(build) = crate::jenkins::jenkins_index().get(&repo.full_name)
+        && let Some(snapshot) =
+            compose_motci_snapshot(build, &plugin_name, repo_name, is_multi_module)
+        && versions.iter().all(|v| v.version != snapshot.version)
+    {
+        debug!(
+            repo = %repo.full_name,
+            version = %snapshot.version,
+            "Attached motci snapshot version"
+        );
+        versions.push(snapshot);
+    }
 
     let summary = match yml.description.as_deref().map(str::trim) {
         Some(text) if !text.is_empty() && !is_placeholder(text) => text.to_string(),
@@ -918,13 +1056,27 @@ fn combine_categories(topic_categories: Vec<String>, ai_categories: Vec<String>)
 mod tests {
     use super::{
         BuildOptions, build_plugin_id, categories_from_topics, combine_categories,
-        detect_categories_with_classifier, detect_targets_from_build_content,
-        detect_targets_from_topics, group_manifest_paths, is_annotation_manifest_path,
-        is_plugin_manifest_path, manifest_implied_targets, module_key_from_manifest_path,
-        ordered_manifest_candidates, parse_timestamp, project_updated_timestamp, resolve_authors,
-        select_primary_manifest_path,
+        compose_motci_snapshot, detect_categories_with_classifier,
+        detect_targets_from_build_content, detect_targets_from_topics, group_manifest_paths,
+        is_annotation_manifest_path, is_plugin_manifest_path, jar_display_name, jar_name_matches,
+        manifest_implied_targets, module_key_from_manifest_path, ordered_manifest_candidates,
+        parse_timestamp, project_updated_timestamp, resolve_authors, select_primary_manifest_path,
+        sha256_from_digest,
     };
     use crate::github::{Contributor, Owner, Release, Repository};
+    use crate::jenkins::JenkinsBuildInfo;
+
+    fn motci_build(job_url: &str, artifacts: &[(&str, &str)]) -> JenkinsBuildInfo {
+        JenkinsBuildInfo {
+            job_url: job_url.to_string(),
+            build_number: 60,
+            timestamp: 1_777_593_600_000,
+            artifacts: artifacts
+                .iter()
+                .map(|(f, p)| ((*f).to_string(), (*p).to_string()))
+                .collect(),
+        }
+    }
 
     fn repo_with_dates(updated_at: &str, pushed_at: &str) -> Repository {
         Repository {
@@ -966,6 +1118,167 @@ mod tests {
             published_at: published_at.to_string(),
             assets: Vec::new(),
         }
+    }
+
+    #[test]
+    fn sha256_from_digest_accepts_known_shape_only() {
+        let hex = "a".repeat(64);
+        assert_eq!(
+            sha256_from_digest(Some(&format!("sha256:{hex}"))),
+            Some(hex.clone())
+        );
+        // 大写 hex 归一为小写
+        let upper: String = hex.to_uppercase();
+        assert_eq!(
+            sha256_from_digest(Some(&format!("sha256:{upper}"))),
+            Some(hex.clone())
+        );
+        assert_eq!(
+            sha256_from_digest(Some("sha1:da39a3ee5e6b4b0d3255bfef95601890afd80709")),
+            None
+        );
+        assert_eq!(sha256_from_digest(Some("sha256:deadbeef")), None);
+        assert_eq!(sha256_from_digest(None), None);
+    }
+
+    #[test]
+    fn motci_snapshot_for_single_module_repo() {
+        let build = motci_build(
+            "https://motci.cn/job/Radio/",
+            &[(
+                "Radio-1.2.0-SNAPSHOT.jar",
+                "target/Radio-1.2.0-SNAPSHOT.jar",
+            )],
+        );
+
+        let snapshot = compose_motci_snapshot(&build, "Radio", "Radio", false).expect("snapshot");
+
+        assert_eq!(snapshot.version, "ci-60");
+        assert_eq!(snapshot.name, "1.2.0-SNAPSHOT");
+        assert!(snapshot.prerelease);
+        assert_eq!(snapshot.published_at, 1_777_593_600);
+        assert_eq!(snapshot.downloads, 0);
+        assert_eq!(snapshot.files.len(), 1);
+        assert_eq!(snapshot.files[0].filename, "Radio-1.2.0-SNAPSHOT.jar");
+        assert_eq!(
+            snapshot.files[0].url,
+            "https://motci.cn/job/Radio/60/artifact/target/Radio-1.2.0-SNAPSHOT.jar"
+        );
+        assert!(snapshot.files[0].primary);
+    }
+
+    #[test]
+    fn motci_snapshot_skips_non_jar_artifacts() {
+        let build = motci_build(
+            "https://motci.cn/job/Foo",
+            &[
+                ("Foo-1.0.jar", "target/Foo-1.0.jar"),
+                ("build.log", "build.log"),
+                ("sources.zip", "target/sources.zip"),
+            ],
+        );
+
+        let snapshot = compose_motci_snapshot(&build, "Foo", "Foo", false).expect("snapshot");
+        assert_eq!(snapshot.files.len(), 1);
+        assert_eq!(snapshot.files[0].filename, "Foo-1.0.jar");
+    }
+
+    // Maven -sources / -javadoc 附件以 .jar 结尾但不可安装,两条路径都要排除
+    #[test]
+    fn motci_snapshot_excludes_sources_and_javadoc_jars() {
+        let single = motci_build(
+            "https://motci.cn/job/Foo",
+            &[
+                ("Foo-1.0.jar", "target/Foo-1.0.jar"),
+                ("Foo-1.0-sources.jar", "target/Foo-1.0-sources.jar"),
+                ("Foo-1.0-javadoc.jar", "target/Foo-1.0-javadoc.jar"),
+            ],
+        );
+        let snapshot = compose_motci_snapshot(&single, "Foo", "Foo", false).expect("snapshot");
+        assert_eq!(snapshot.files.len(), 1);
+        assert_eq!(snapshot.files[0].filename, "Foo-1.0.jar");
+
+        // 多模块路径:名称匹配能命中 "Coin-1.0-sources",仍必须排除
+        let multi = motci_build(
+            "https://motci.cn/job/Multi",
+            &[
+                ("Coin-1.0.jar", "Coin/target/Coin-1.0.jar"),
+                ("Coin-1.0-sources.jar", "Coin/target/Coin-1.0-sources.jar"),
+            ],
+        );
+        let snapshot = compose_motci_snapshot(&multi, "Coin", "MultiRepo", true).expect("snapshot");
+        assert_eq!(snapshot.files.len(), 1);
+        assert_eq!(snapshot.files[0].filename, "Coin-1.0.jar");
+    }
+
+    #[test]
+    fn motci_snapshot_multi_module_claims_matching_jar_only() {
+        let build = motci_build(
+            "https://motci.cn/job/Multi",
+            &[
+                (
+                    "DCurrency-1.0.0.jar",
+                    "DCurrency/target/DCurrency-1.0.0.jar",
+                ),
+                ("GameAPI-2.0.jar", "GameAPI/target/GameAPI-2.0.jar"),
+            ],
+        );
+
+        let snapshot =
+            compose_motci_snapshot(&build, "DCurrency", "MultiRepo", true).expect("snapshot");
+        assert_eq!(snapshot.files.len(), 1);
+        assert_eq!(snapshot.files[0].filename, "DCurrency-1.0.0.jar");
+        assert_eq!(snapshot.name, "1.0.0");
+        assert_eq!(
+            snapshot.files[0].url,
+            "https://motci.cn/job/Multi/60/artifact/DCurrency/target/DCurrency-1.0.0.jar"
+        );
+    }
+
+    #[test]
+    fn motci_snapshot_multi_module_skips_when_no_artifact_matches() {
+        let build = motci_build(
+            "https://motci.cn/job/Multi",
+            &[("CoinSystem-1.0.jar", "CoinSystem/target/CoinSystem-1.0.jar")],
+        );
+
+        assert!(compose_motci_snapshot(&build, "Coin", "MultiRepo", true).is_none());
+    }
+
+    #[test]
+    fn motci_snapshot_requires_jar_artifacts() {
+        let build = motci_build("https://motci.cn/job/Foo", &[("notes.txt", "notes.txt")]);
+        assert!(compose_motci_snapshot(&build, "Foo", "Foo", false).is_none());
+    }
+
+    #[test]
+    fn jar_name_matching_respects_word_boundaries() {
+        assert!(jar_name_matches("Radio-1.2.0-SNAPSHOT", "Radio"));
+        assert!(jar_name_matches("radio_1.0.jar", "Radio"));
+        assert!(jar_name_matches("EconomyAPI-2.1.1", "EconomyAPI"));
+        assert!(jar_name_matches("Radio", "Radio"));
+        assert!(!jar_name_matches("CoinSystem-1.0", "Coin"));
+        assert!(!jar_name_matches("MyRadio-1.0", "Radio"));
+        assert!(!jar_name_matches("Radio-1.0", ""));
+    }
+
+    #[test]
+    fn display_name_extracts_version_after_matched_prefix() {
+        assert_eq!(
+            jar_display_name("Radio-1.2.0-SNAPSHOT", &["Radio"]),
+            "1.2.0-SNAPSHOT"
+        );
+        assert_eq!(
+            jar_display_name("EconomyAPI_2.1.1", &["EconomyAPI"]),
+            "2.1.1"
+        );
+        // 前缀不落在边界上时不裁剪,回退整个主干
+        assert_eq!(
+            jar_display_name("CoinSystem-1.0", &["Coin"]),
+            "CoinSystem-1.0"
+        );
+        // 无任何名称命中时回退整个主干
+        assert_eq!(jar_display_name("mystery-1.0", &["Other"]), "mystery-1.0");
     }
 
     #[test]

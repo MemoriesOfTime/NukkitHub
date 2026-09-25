@@ -173,7 +173,15 @@ However, if you want users to see downloadable versions on NukkitHub, publish re
 2. Attach one or more `.jar` files
 3. Use the release title and body as your version title and changelog
 
-Only **GitHub Releases** are indexed as plugin versions.
+**GitHub Releases** are the primary source of plugin versions.
+
+Additionally, if the repository has a job on [motci.cn](https://motci.cn)
+(the community Jenkins for Nukkit-MOT plugins), NukkitHub attaches the latest
+successful build as one extra snapshot version, named `ci-{build}` and flagged
+as a prerelease. The download links point to the Jenkins build artifacts.
+
+In multi-module repositories, a CI artifact is only attached to the module
+whose plugin name matches the artifact filename.
 
 ## Programmatic Access (Public API)
 
@@ -185,7 +193,9 @@ NukkitHub public API, shaped after the Modrinth API:
 - Latest installable version of a plugin:
   `/api/v2/project/{owner}/{name}/latest.json`
 
-Downloads require a GitHub Release with an attached `.jar` file (see above).
+Downloads come from GitHub Release `.jar` assets (see above) and, when the
+repository builds on [motci.cn](https://motci.cn), the latest successful CI
+build as a prerelease snapshot version.
 See [API.md](./API.md) for the full endpoint reference, response shapes, and
 compatibility notes for Modrinth-based tooling.
 
