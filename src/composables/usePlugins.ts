@@ -1,11 +1,15 @@
 import { type ComputedRef, type Ref, toValue } from 'vue'
 
 import type AllayIndex from '~/types/allayhub-index'
+import {
+  getRepoNameFromId,
+  isTemplatePlaceholder,
+  toPluginSummary,
+} from '~/utils/plugin-summary'
 
 import {
   getAllPlugins,
   type OramaSearchFilters,
-  type PluginDocument,
   searchPlugins,
 } from './orama-loader'
 
@@ -37,17 +41,6 @@ const pluginModules = import.meta.glob<AllayIndex.Plugin>(
     import: 'default',
   },
 )
-
-function isTemplatePlaceholder(value: unknown): value is string {
-  if (typeof value !== 'string') return false
-  const text = value.trim()
-  return /^\$\{[^}]+\}$/.test(text) || /^@[^@\r\n]+@$/.test(text)
-}
-
-function getRepoNameFromId(id: string): string {
-  const [, repo] = id.split('/')
-  return repo || id
-}
 
 function processPluginData(data: AllayIndex.Plugin): AllayIndex.Plugin {
   const result: Record<string, unknown> = {}
@@ -175,47 +168,10 @@ export function formatFileSize(bytes: number): string {
 }
 
 /**
- * Convert unix timestamp (seconds) to ISO string
- */
-function toISOString(seconds: number): string {
-  return new Date(seconds * 1000).toISOString()
-}
-
-/**
  * Get total pages for pagination
  */
 export function getTotalPages(totalItems: number, perPage: number): number {
   return Math.ceil(totalItems / perPage)
-}
-
-function toPluginSummary(doc: PluginDocument): AllayIndex.PluginSummary {
-  const displayName = doc.display_name?.trim() || ''
-  const fallbackName = getRepoNameFromId(doc.id)
-  const safeName =
-    displayName && !isTemplatePlaceholder(displayName)
-      ? displayName
-      : fallbackName
-
-  const summary = doc.summary?.trim() || ''
-  const safeSummary = isTemplatePlaceholder(summary) ? '' : summary
-
-  return {
-    id: doc.id,
-    name: safeName,
-    summary: safeSummary,
-    author: doc.author,
-    categories: doc.categories,
-    targets: doc.targets,
-    primary_target: doc.primary_target,
-    api_version: doc.api_version,
-    license: doc.license,
-    downloads: doc.downloads,
-    stars: doc.stars,
-    created_at: toISOString(doc.created_at),
-    updated_at: toISOString(doc.updated_at),
-    icon_url: doc.icon_url || undefined,
-    gallery_image: doc.gallery_image || undefined,
-  }
 }
 
 export interface PluginSearchResult {

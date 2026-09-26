@@ -138,8 +138,10 @@ export default defineNuxtConfig({
       crawlLinks: false,
       // Starting routes for crawling
       routes: getPrerenderRoutes(),
-      // Ignore routes that intentionally throw 404
-      ignore: ['/discover'],
+      // Ignore routes that intentionally throw 404.
+      // Nitro string patterns match by prefix, so an exact matcher is needed
+      // to keep /discover/plugins prerenderable
+      ignore: [(route) => route === '/discover'],
       // Ignore errors for dynamic routes that can't be pre-rendered
       failOnError: true,
     },

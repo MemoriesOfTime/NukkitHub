@@ -48,20 +48,36 @@ const cosmetics = useCosmetics()
 const flags = useFeatureFlags()
 
 // Use new index composables
-const { search, isSearching } = usePluginSearch()
+const { search, isSearching, preloadIndex } = usePluginSearch()
 const { data: categoriesData } = useCategories()
 const { data: apiVersionsData } = useApiVersions()
 const { data: pluginTargetsData } = usePluginTargets()
 
 // Search state
-const query = ref((route.query.q as string) ?? '')
-const currentPage = ref(Number(route.query.p) || 1)
-const perPage = ref(Number(route.query.pp) || 20)
-const sortType = ref<SortOption>((route.query.s as SortOption) ?? 'stars')
-// If user had 'downloads' from a previous URL, fallback to 'stars' when flag is off
-if (sortType.value === 'downloads' && !flags.value.showDownloadCounts) {
-  sortType.value = 'stars'
+const query = ref('')
+const currentPage = ref(1)
+const perPage = ref(20)
+const sortType = ref<SortOption>('stars')
+
+// Initialize search state from URL params; re-applied on mount after the
+// router is ready, because hydration can mount before route.query reflects
+// the landing URL (?q=/?s= style links would otherwise be dropped)
+function applyUrlQueryToState() {
+  query.value = (route.query.q as string) ?? ''
+  currentPage.value = Number(route.query.p) || 1
+  perPage.value = Number(route.query.pp) || 20
+  sortType.value = (route.query.s as SortOption) ?? 'stars'
+  // If user had 'downloads' from a previous URL, fallback to 'stars' when flag is off
+  if (sortType.value === 'downloads' && !flags.value.showDownloadCounts) {
+    sortType.value = 'stars'
+  }
 }
+
+applyUrlQueryToState()
+
+// Cancels the one-shot watcher in onMounted once URL-driven initialization
+// is no longer needed (see there for why it exists)
+let stopInitialUrlWatch: (() => void) | null = null
 
 // Filter state
 const currentFilters = ref<FilterValue[]>([])
@@ -136,9 +152,53 @@ const currentMaxResultsOptions = computed(
   () => maxResultsForView.value[resultsDisplayMode.value] ?? [20],
 )
 
-// Search results
-const searchResults = ref<AllayIndex.PluginSummary[]>([])
-const totalResults = ref(0)
+// Any search params in the landing URL make the view differ from the
+// prerendered default state (no query, no filters, first page, stars sort).
+// Must be evaluated after the router is ready — see initializeSearchFromUrl
+function hasInitialSearchParams() {
+  return Boolean(
+    route.query.q ||
+    route.query.p ||
+    route.query.s ||
+    route.query.pp ||
+    route.query.c ||
+    route.query.t ||
+    route.query.v ||
+    route.query.l ||
+    route.query.f ||
+    route.query.g,
+  )
+}
+
+interface DiscoverInitialData {
+  results: AllayIndex.PluginSummary[]
+  count: number
+}
+
+const { data: initialData } = await useAsyncData<DiscoverInitialData | null>(
+  'discover-initial-results',
+  async () => {
+    if (import.meta.server) {
+      const { getDiscoverInitialData } =
+        await import('~/utils/discover-data.server')
+      return await getDiscoverInitialData()
+    }
+    return null
+  },
+  { default: () => null },
+)
+
+// Seed with the prerendered results whenever they are available, even when
+// the landing URL carries search params: the payload is restored by route
+// (not by query), so seeding on both server and client keeps the results
+// region hydration-consistent; params then trigger a real search on mount
+const seededInitialResults = (initialData.value?.results.length ?? 0) > 0
+const searchResults = ref<AllayIndex.PluginSummary[]>(
+  seededInitialResults && initialData.value ? initialData.value.results : [],
+)
+const totalResults = ref(
+  seededInitialResults && initialData.value ? initialData.value.count : 0,
+)
 const searchLoading = computed(() => isSearching.value)
 
 // Page count
@@ -361,6 +421,10 @@ function clearTargetFilters() {
 }
 
 function updateSearchResults(pageNumber: number = 1, resetScroll = true) {
+  // The URL is now user-driven; drop the hydration URL-restore watcher
+  stopInitialUrlWatch?.()
+  stopInitialUrlWatch = null
+
   currentPage.value = pageNumber
   if (resetScroll) {
     scrollToTop()
@@ -468,6 +532,27 @@ function parseCategoryQueryValue(value: string): {
 
 // Initialize search on mount
 onMounted(() => {
+  void initializeSearchFromUrl()
+
+  // When hydrating a prerendered page, Nuxt first restores the payload route
+  // (without the landing URL's query) and re-navigates to the real URL right
+  // after mount; that navigation does not remount this component, so catch
+  // it here to honor ?q=/?c= style landing URLs
+  stopInitialUrlWatch = watch(hasInitialSearchParams, (present, was) => {
+    if (was || !present) return
+    stopInitialUrlWatch?.()
+    stopInitialUrlWatch = null
+    void initializeSearchFromUrl()
+  })
+})
+
+async function initializeSearchFromUrl() {
+  // On hydration the router may still sit on the payload route here; the
+  // watcher in onMounted re-runs this once the real landing URL (with its
+  // query params) is restored
+  await router.isReady()
+  applyUrlQueryToState()
+
   if (route.query.t) {
     const targetIds = (route.query.t as string).split(',')
     targetIds.forEach((targetId) => {
@@ -524,8 +609,14 @@ onMounted(() => {
       })
     }
   }
+  if (!hasInitialSearchParams() && seededInitialResults) {
+    // The default view is already prerendered; warm the search index in the
+    // background so the first interaction does not pay the download
+    void preloadIndex()
+    return
+  }
   performSearch()
-})
+}
 
 // SEO
 const title = computed(
