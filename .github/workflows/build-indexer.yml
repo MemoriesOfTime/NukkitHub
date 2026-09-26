@@ -7,6 +7,7 @@ on:
       - 'indexer/src/**'
       - 'indexer/data/**'
       - 'indexer/Cargo.toml'
+      - '.github/workflows/build-indexer.yml'
   workflow_dispatch:
 
 concurrency:
@@ -24,6 +25,12 @@ jobs:
 
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: x86_64-unknown-linux-musl
+
+      # ring / tree-sitter contain C code, which musl-gcc compiles for the musl target
+      - name: Setup musl toolchain
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Cache Rust dependencies
         uses: actions/cache@v4
@@ -34,19 +41,29 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             indexer/target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('indexer/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-musl-${{ hashFiles('indexer/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-musl-
 
       - name: Build nukkitindexer
-        run: cargo build --release --manifest-path indexer/Cargo.toml
+        run: cargo build --release --target x86_64-unknown-linux-musl --manifest-path indexer/Cargo.toml
+
+      # rustc emits "static-pie linked" for the musl target since 1.71
+      - name: Verify static linking
+        run: |
+          BIN=indexer/target/x86_64-unknown-linux-musl/release/nukkitindexer
+          file "$BIN"
+          file -b "$BIN" | grep -qE 'statically linked|static-pie linked'
+
+      - name: Smoke test
+        run: indexer/target/x86_64-unknown-linux-musl/release/nukkitindexer --help
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: nukkitindexer-latest
           name: nukkitindexer Binary
-          files: indexer/target/release/nukkitindexer
-          body: Auto-built nukkitindexer binary
+          files: indexer/target/x86_64-unknown-linux-musl/release/nukkitindexer
+          body: Auto-built nukkitindexer binary (statically linked against musl, runs on any x86_64 Linux)
           prerelease: true
           make_latest: false
