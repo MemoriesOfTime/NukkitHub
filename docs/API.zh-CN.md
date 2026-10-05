@@ -59,9 +59,15 @@ curl -s https://plugins.nukkit-mot.com/api/v2/project/SoBadFish/BedWar/latest.js
 | `GET {api_base}/v2/meta.json`                                            | 索引元数据、计数、规范 `api_base`                                                            |
 
 `{owner}/{name}` 是从 GitHub 派生的 id（多模块仓库为
-`owner/repo--module-suffix`）。没有已索引 GitHub Release 的插件 id，其
-`versions` 数组为空，也没有 `latest`。访问 `{api_base}/` 可以看到
-一个简短的人类可读端点索引页。
+`owner/repo--module-suffix`）。API 中的每个项目都至少有一个可安装
+版本：没有任何已索引下载（无 GitHub Release 也无 CI 构建）的插件仍被
+索引跟踪，但在首个版本出现之前不会进入 API。访问 `{api_base}/`
+可以看到一个简短的可读索引页。
+
+版本号来自 GitHub Release 标签。此外，在 [motci.cn](https://motci.cn)
+上构建的仓库会携带一个编号为 `ci-{build}` 的快照版本
+（`version_type: "beta"`），其文件指向 Jenkins 构建产物。存在非预发布
+release 时，`latest` 仍优先返回它。
 
 版本号只在**项目内**唯一，因此全局唯一的版本 id 是复合形式
 `{project_id}@{version_number}`，例如 `SoBadFish/BedWar@v2.2.3`。`versions`
@@ -149,7 +155,7 @@ curl -s 'https://plugins.nukkit-mot.com/api/v2/search?facets=%5B%5B%22loaders%3A
   "name": "2023/08/27 v2.2.3 更新",
   "version_number": "v2.2.3",
   "changelog": "…",
-  "version_type": "release",          // GitHub release 为预发布时是 "beta"
+  "version_type": "release",          // GitHub 预发布与 ci-* 快照为 "beta"
   "date_published": "2024-08-27T04:01:38.000Z",
   "downloads": 0,
   "loaders": ["nkx", "nkmot"],        // 从项目继承

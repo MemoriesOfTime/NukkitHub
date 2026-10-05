@@ -101,10 +101,12 @@ fn cmd_build() {
         process::exit(1);
     }
 
-    let plugins = {
+    let mut plugins = {
         let _span = info_span!("load_plugins").entered();
         load_plugins(index_dir)
     };
+    // pending(无任何可安装版本)不进搜索索引与预渲染数据
+    plugins.retain(|plugin| !plugin.pending);
     if plugins.is_empty() {
         warn!("No plugins found");
         return;

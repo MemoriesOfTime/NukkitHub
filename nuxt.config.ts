@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { LOCALES } from '@modrinth/ui/src/composables/i18n.ts'
 import serverSidedVue from '@vitejs/plugin-vue'
@@ -266,6 +266,19 @@ function getDomain() {
   return 'https://plugins.nukkit-mot.com'
 }
 
+// pending = indexed but without any installable version: hidden from search
+// and API, so its detail page must not be generated either
+function isPendingPlugin(fullPath: string): boolean {
+  try {
+    return (
+      (JSON.parse(readFileSync(fullPath, 'utf8')) as { pending?: unknown })
+        .pending === true
+    )
+  } catch {
+    return false
+  }
+}
+
 function getPrerenderRoutes() {
   const routes = new Set<string>([
     '/',
@@ -298,6 +311,10 @@ function getPrerenderRoutes() {
       }
 
       if (!entry.isFile() || !entry.name.endsWith('.json')) {
+        continue
+      }
+
+      if (isPendingPlugin(fullPath)) {
         continue
       }
 

@@ -1,5 +1,5 @@
 use super::builder::{build_plugins_from_nukkit_with_tree, find_plugin_manifest_paths};
-use crate::github::{CompareResult, Repository, client};
+use crate::github::{Repository, client};
 use crate::plugin::Plugin;
 use chrono::{Datelike, Duration, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
@@ -704,52 +704,27 @@ fn is_repo_missing_error(error: &str) -> bool {
     error == "not found" || error.contains("404")
 }
 
-// GitHub repo 接口正常都会返回 default_branch;fallback 仅为兼容旧缓存条目
-const DEFAULT_BRANCH_FALLBACK: &str = "master";
-
-/// fork 相对其直接上游是否有自己的提交
-fn fork_has_own_commits(repo: &Repository) -> Result<bool, String> {
-    let Some((base, head, owner, name)) = fork_compare_refs(repo) else {
-        // 旧缓存中的仓库可能缺少上游信息,无法判断时保守放行
-        return Ok(true);
-    };
-    let result = client().compare_repository(owner, name, &base, &head);
-    classify_fork_compare(result)
-}
-
-/// compare 结果 → 是否保留该 fork:
-/// - `ahead_by > 0` 相对上游有独立提交,保留
-/// - `ahead_by == 0` 是上游的纯镜像,跳过
-/// - 404:上游已删除,或两分支无共同祖先(历史被重写),保留
-/// - 限流:向上传播,让同步稍后重试;其他错误由调用方保守放行
-fn classify_fork_compare(result: Result<CompareResult, String>) -> Result<bool, String> {
-    match result {
-        Ok(compare) => Ok(compare.ahead_by > 0),
-        Err(e) if is_repo_missing_error(&e) => Ok(true),
-        Err(e) => Err(e),
+/// fork 是否提供自己的可安装版本(GitHub Release / motci 快照)。
+/// 上游 release 不会随 fork 复制,无版本的 fork 对用户不可安装,不值得索引;
+/// 改造型 fork(如 nk 插件改造为 pnx)通常会自发 release,能正常通过。
+/// discover 用它跳过镜像 fork;update 删除"双空"fork 前用它做最终确认。
+/// motci 索引加载失败或查询失败时保守放行(视为有版本):放行的 fork 会以
+/// pending 入库,由 update 在数据源恢复后转正或确认删除,不会误删。
+pub(crate) fn fork_has_own_versions(repo: &Repository) -> bool {
+    let jenkins = crate::jenkins::jenkins_index();
+    if !jenkins.loaded() {
+        return true;
     }
-}
-
-/// 构造 compare 引用(base/head 均需 `owner:branch` 形式)与仓库坐标;
-/// 缺少上游信息时返回 None
-fn fork_compare_refs(repo: &Repository) -> Option<(String, String, &str, &str)> {
-    let parent = repo.parent.as_ref()?;
-    let (owner, name) = repo.full_name.split_once('/')?;
-    let parent_owner = parent.full_name.split_once('/')?.0;
-    let parent_branch = parent
-        .default_branch
-        .clone()
-        .unwrap_or_else(|| DEFAULT_BRANCH_FALLBACK.to_string());
-    let fork_branch = repo
-        .default_branch
-        .clone()
-        .unwrap_or_else(|| DEFAULT_BRANCH_FALLBACK.to_string());
-    Some((
-        format!("{}:{}", parent_owner, parent_branch),
-        format!("{}:{}", owner, fork_branch),
-        owner,
-        name,
-    ))
+    if jenkins.get(&repo.full_name).is_some() {
+        return true;
+    }
+    let Some((owner, name)) = repo.full_name.split_once('/') else {
+        return true;
+    };
+    client()
+        .get_releases(owner, name)
+        .map(|releases| !releases.is_empty())
+        .unwrap_or(true)
 }
 
 fn collect_repo_matches_from_code_search(
@@ -1076,22 +1051,9 @@ fn process_single_repo(repo_match: RepoMatch) -> Result<Vec<Plugin>, String> {
         debug!(repo = %full_name, "Skip noindex");
         return Ok(Vec::new());
     }
-    if repo.fork {
-        match fork_has_own_commits(&repo) {
-            Ok(true) => {}
-            Ok(false) => {
-                debug!(repo = %full_name, "Skip fork without own commits");
-                return Ok(Vec::new());
-            }
-            Err(e) if e.contains("Rate limited") => return Err(e),
-            Err(e) => {
-                warn!(
-                    repo = %full_name,
-                    error = %e,
-                    "Failed to compare fork with upstream, keeping fork"
-                );
-            }
-        }
+    if repo.fork && !fork_has_own_versions(&repo) {
+        debug!(repo = %full_name, "Skip fork without own installable versions");
+        return Ok(Vec::new());
     }
 
     let mut prefetched_tree = None;
@@ -1124,9 +1086,17 @@ fn process_single_repo(repo_match: RepoMatch) -> Result<Vec<Plugin>, String> {
         return Ok(Vec::new());
     }
 
-    let plugins = build_plugins_from_nukkit_with_tree(&repo, &manifest_paths, prefetched_tree);
+    let mut plugins = build_plugins_from_nukkit_with_tree(&repo, &manifest_paths, prefetched_tree);
     if plugins.is_empty() {
         debug!(repo = %full_name, "No plugins built");
+    }
+
+    // 无任何可安装版本的插件(含改造型 fork)保留跟踪但标记 pending,
+    // 由 update 在版本出现时转正;数据层过滤见 cmd_build / export-api
+    for plugin in &mut plugins {
+        if plugin.versions.is_empty() {
+            plugin.pending = true;
+        }
     }
 
     Ok(plugins)
@@ -1182,45 +1152,12 @@ fn find_annotation_manifest_paths_by_repo_search(full_name: &str) -> Result<Vec<
 mod tests {
     use super::{
         CODE_SEARCH_QUERIES, CollectResult, DiscoverProgress, DiscoverResult, EXCLUDED_REPOS,
-        KEYWORD_QUERIES, RepoMatch, TOPIC_QUERIES, classify_fork_compare, fork_compare_refs,
-        is_repo_missing_error, last_day_of_month, mark_collect_incomplete_on_search_timeout,
-        merge_collect_result, parse_sync_date, pushed_after_query, pushed_range_query,
-        should_mark_repo_processed,
+        KEYWORD_QUERIES, RepoMatch, TOPIC_QUERIES, is_repo_missing_error, last_day_of_month,
+        mark_collect_incomplete_on_search_timeout, merge_collect_result, parse_sync_date,
+        pushed_after_query, pushed_range_query, should_mark_repo_processed,
     };
-    use crate::github::{CompareResult, Owner, Repository, RepositoryParent};
     use chrono::NaiveDate;
     use std::collections::HashSet;
-
-    fn fork_repository() -> Repository {
-        Repository {
-            id: 2,
-            full_name: "forker/plugin".to_string(),
-            name: "plugin".to_string(),
-            description: None,
-            html_url: String::new(),
-            stargazers_count: 0,
-            forks_count: 0,
-            created_at: String::new(),
-            updated_at: String::new(),
-            pushed_at: String::new(),
-            owner: Owner {
-                login: "forker".to_string(),
-                avatar_url: String::new(),
-                html_url: String::new(),
-            },
-            license: None,
-            topics: vec!["nukkit-plugin".to_string()],
-            is_template: false,
-            fork: true,
-            archived: false,
-            default_branch: Some("main".to_string()),
-            contributors_url: String::new(),
-            parent: Some(RepositoryParent {
-                full_name: "upstream/plugin".to_string(),
-                default_branch: Some("master".to_string()),
-            }),
-        }
-    }
 
     #[test]
     fn discover_progress_checkpoint_sorts_processed_repos() {
@@ -1282,79 +1219,6 @@ mod tests {
     #[test]
     fn pnx_server_repo_is_excluded_from_discovery() {
         assert!(EXCLUDED_REPOS.contains(&"PowerNukkitX/PowerNukkitX"));
-    }
-
-    fn compare(ahead_by: u64) -> CompareResult {
-        CompareResult {
-            status: if ahead_by > 0 { "ahead" } else { "identical" }.to_string(),
-            ahead_by,
-            behind_by: 0,
-        }
-    }
-
-    #[test]
-    fn fork_compare_refs_builds_owner_prefixed_refs() {
-        let repo = fork_repository();
-
-        let (base, head, owner, name) = fork_compare_refs(&repo).unwrap();
-
-        assert_eq!(base, "upstream:master");
-        assert_eq!(head, "forker:main");
-        assert_eq!(owner, "forker");
-        assert_eq!(name, "plugin");
-    }
-
-    #[test]
-    fn fork_compare_refs_requires_parent_and_owner() {
-        let mut repo = fork_repository();
-        repo.parent = None;
-        assert!(fork_compare_refs(&repo).is_none());
-
-        let mut repo = fork_repository();
-        repo.full_name = "no-slash".to_string();
-        assert!(fork_compare_refs(&repo).is_none());
-
-        // 缺少分支信息时回退到 master
-        let mut repo = fork_repository();
-        repo.parent = Some(RepositoryParent {
-            full_name: "upstream/plugin".to_string(),
-            default_branch: None,
-        });
-        repo.default_branch = None;
-        let (base, head, _, _) = fork_compare_refs(&repo).unwrap();
-        assert_eq!(base, "upstream:master");
-        assert_eq!(head, "forker:master");
-    }
-
-    #[test]
-    fn classify_fork_compare_keeps_forks_with_own_commits() {
-        assert_eq!(classify_fork_compare(Ok(compare(1))), Ok(true));
-        assert_eq!(classify_fork_compare(Ok(compare(101))), Ok(true));
-    }
-
-    #[test]
-    fn classify_fork_compare_skips_pure_mirror_forks() {
-        assert_eq!(classify_fork_compare(Ok(compare(0))), Ok(false));
-    }
-
-    #[test]
-    fn classify_fork_compare_keeps_forks_when_upstream_missing() {
-        assert_eq!(
-            classify_fork_compare(Err("HTTP status 404".to_string())),
-            Ok(true)
-        );
-        assert_eq!(
-            classify_fork_compare(Err("not found".to_string())),
-            Ok(true)
-        );
-    }
-
-    #[test]
-    fn classify_fork_compare_propagates_other_errors() {
-        assert_eq!(
-            classify_fork_compare(Err("Rate limited after 3 attempts".to_string())),
-            Err("Rate limited after 3 attempts".to_string())
-        );
     }
 
     #[test]

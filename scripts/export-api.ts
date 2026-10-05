@@ -414,7 +414,7 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;')
 }
 
-function readIndexPlugins(): AllayIndex.Plugin[] {
+export function readIndexPlugins(): AllayIndex.Plugin[] {
   const root = resolve(process.cwd(), INDEX_DIR)
   if (!existsSync(root)) {
     fail(
@@ -477,6 +477,9 @@ function readIndexPlugins(): AllayIndex.Plugin[] {
           }
         }
       }
+      // pending = indexed but without any installable version (no GitHub
+      // Release jar, no motci snapshot): kept for tracking, invisible to the API
+      if (raw.pending === true) continue
       plugins.push(cleanPlugin(raw as unknown as AllayIndex.Plugin))
     }
   }

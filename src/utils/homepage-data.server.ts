@@ -181,6 +181,8 @@ function getRankedPlugins(): RankedPluginSummary[] {
 
       const content = readFileSync(fullPath, 'utf8')
       const plugin = JSON.parse(content) as AllayIndex.Plugin
+      // pending = no installable version yet: not eligible for showcase
+      if (plugin.pending === true) continue
       rankedPlugins.push(toRankedPluginSummary(plugin))
     }
   }

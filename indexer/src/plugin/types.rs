@@ -47,6 +47,10 @@ pub struct Plugin {
     pub server_version: String,
     #[serde(default)]
     pub dependencies: Vec<Dependency>,
+    /// 无任何可安装版本(GitHub Release .jar / motci 快照):
+    /// 保留跟踪、等首个版本转正,但不进搜索与 API 数据集
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pending: bool,
     #[serde(default, skip_serializing)]
     pub preserved_fields: HashMap<String, Value>,
 }
@@ -207,6 +211,7 @@ mod tests {
             api_version: String::new(),
             server_version: String::new(),
             dependencies: Vec::new(),
+            pending: false,
             preserved_fields: Default::default(),
         }
     }
@@ -228,5 +233,26 @@ mod tests {
         ];
 
         assert_eq!(plugin.get_author_name(), "owner");
+    }
+
+    #[test]
+    fn pending_defaults_false_for_legacy_json_and_omits_when_false() {
+        // 存量 JSON 无 pending 字段:反序列化为 false
+        let legacy: Plugin = serde_json::from_value(serde_json::json!({
+            "id": "owner/repo",
+            "name": "Plugin",
+            "source": "https://github.com/owner/repo"
+        }))
+        .unwrap();
+        assert!(!legacy.pending);
+
+        // false 不落盘,保持索引文件干净
+        let json = serde_json::to_value(&legacy).unwrap();
+        assert!(json.get("pending").is_none());
+
+        let mut pending = legacy.clone();
+        pending.pending = true;
+        let json = serde_json::to_value(&pending).unwrap();
+        assert_eq!(json.get("pending"), Some(&serde_json::json!(true)));
     }
 }

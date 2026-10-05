@@ -843,6 +843,23 @@ fn compose_motci_snapshot(
     })
 }
 
+/// release 中可作为安装产物的 .jar 资产。这是"可安装版本"的唯一判定口径,
+/// update 的版本消失复查也依赖它,修改时两处语义必须保持一致
+pub(crate) fn release_jar_files(release: &Release) -> Vec<VersionFile> {
+    release
+        .assets
+        .iter()
+        .filter(|a| a.name.ends_with(".jar"))
+        .map(|a| VersionFile {
+            filename: a.name.clone(),
+            url: a.browser_download_url.clone(),
+            size: a.size,
+            primary: true,
+            sha256: sha256_from_digest(a.digest.as_deref()),
+        })
+        .collect()
+}
+
 fn nukkit_yml_to_plugin(
     yml: crate::nukkit::NukkitPluginYml,
     repo: &Repository,
@@ -891,18 +908,7 @@ fn nukkit_yml_to_plugin(
     let mut versions: Vec<Version> = releases
         .iter()
         .filter_map(|release| {
-            let files: Vec<VersionFile> = release
-                .assets
-                .iter()
-                .filter(|a| a.name.ends_with(".jar"))
-                .map(|a| VersionFile {
-                    filename: a.name.clone(),
-                    url: a.browser_download_url.clone(),
-                    size: a.size,
-                    primary: true,
-                    sha256: sha256_from_digest(a.digest.as_deref()),
-                })
-                .collect();
+            let files = release_jar_files(release);
 
             if files.is_empty() {
                 debug!(
@@ -1002,6 +1008,7 @@ fn nukkit_yml_to_plugin(
         api_version,
         server_version: String::new(),
         dependencies: all_dependencies,
+        pending: false,
         preserved_fields: Default::default(),
     })
 }

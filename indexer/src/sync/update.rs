@@ -1,6 +1,8 @@
 use super::builder::{
     BuildOptions, build_plugins_from_nukkit_with_tree_options, find_plugin_manifest_paths,
+    release_jar_files,
 };
+use super::discover::fork_has_own_versions;
 use crate::github::client;
 use crate::plugin::Plugin;
 use std::collections::{HashMap, HashSet};
@@ -166,10 +168,78 @@ fn update_plugin(plugin: &Plugin, force: bool) -> Result<UpdateStatus, String> {
     merge_gallery_created(plugin, &mut new_plugin);
     merge_preserved_categories(plugin, &mut new_plugin);
 
+    // 版本终审。两条破坏性路径都要求"确认"而非"缺失":
+    // - 新空旧有:builder 的 get_releases 失败会被静默成空列表,复查确认
+    //   版本真消失了才放行清空,否则沿用盘上旧版本
+    // - fork 双空:向 GitHub 确认 fork 确无自身 release 才删除
+    if new_plugin.versions.is_empty() && !plugin.versions.is_empty() {
+        if versions_gone_confirmed(owner, repo_name) {
+            debug!(id = %plugin.id, "Versions gone, downgrading to pending");
+        } else {
+            keep_last_known_versions(plugin, &mut new_plugin);
+        }
+    }
+    match resolve_pending(plugin, new_plugin.versions.is_empty(), repo.fork) {
+        PendingDecision::Pending(pending) => new_plugin.pending = pending,
+        PendingDecision::DeleteFork => {
+            if fork_has_own_versions(&repo) {
+                // fork 仍有自己的 release(或查询失败无法确认):降级 pending,下轮再裁
+                new_plugin.pending = true;
+            } else {
+                debug!(id = %plugin.id, "Mirror fork without own releases, marking deleted");
+                return Ok(UpdateStatus::Deleted);
+            }
+        }
+    }
+
     if force || plugin_changed(plugin, &new_plugin) {
         Ok(UpdateStatus::Updated(Box::new(new_plugin)))
     } else {
         Ok(UpdateStatus::Unchanged)
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum PendingDecision {
+    /// 插件保留,携带给定的 pending 状态
+    Pending(bool),
+    /// fork 且索引两侧均无版本:镜像副本候选,删除前还需 GitHub 侧确认
+    DeleteFork,
+}
+
+/// 基于"确认无版本 + 旧记录是否零版本 + 是否 fork"裁决 pending 与删除。
+/// "新空旧有"的瞬态复查由 update_plugin 完成后再传入。
+fn resolve_pending(old: &Plugin, confirmed_no_versions: bool, repo_fork: bool) -> PendingDecision {
+    if !confirmed_no_versions {
+        // 版本出现(或保持存在):转正
+        return PendingDecision::Pending(false);
+    }
+    if old.versions.is_empty() && repo_fork {
+        return PendingDecision::DeleteFork;
+    }
+    // 零版本(或版本确认消失):保留跟踪,降级 pending
+    PendingDecision::Pending(true)
+}
+
+/// get_releases 瞬态失败在 builder 中被静默成空列表:此时沿用盘上旧版本,
+/// 等下一轮成功抓取再裁决。若放任空版本写盘,下一轮会把被冲空的旧记录
+/// 当成"双空"确认,误删仍有 release 的 fork
+fn keep_last_known_versions(old: &Plugin, new_plugin: &mut Plugin) {
+    new_plugin.versions = old.versions.clone();
+}
+
+/// 复查版本是否真的消失。成功响应有 ETag 缓存(builder 刚查过则为零成本),
+/// 仅当 motci 索引加载正常(否则 motci-only 插件的快照消失无法区分故障与
+/// 真没版本)且查询成功、所有 release 都无 .jar 资产才确认;其余视为瞬态
+fn versions_gone_confirmed(owner: &str, repo_name: &str) -> bool {
+    if !crate::jenkins::jenkins_index().loaded() {
+        return false;
+    }
+    match client().get_releases(owner, repo_name) {
+        Ok(releases) => releases
+            .iter()
+            .all(|release| release_jar_files(release).is_empty()),
+        Err(_) => false,
     }
 }
 
@@ -252,6 +322,7 @@ fn plugin_changed(old: &Plugin, new: &Plugin) -> bool {
         || old.license != new.license
         || old.authors != new.authors
         || old.categories != new.categories
+        || old.pending != new.pending
         || versions_changed(&old.versions, &new.versions)
 }
 
@@ -272,8 +343,9 @@ fn versions_changed(old: &[crate::plugin::Version], new: &[crate::plugin::Versio
 #[cfg(test)]
 mod tests {
     use super::{
-        UpdateStatus, is_missing_repo_error, manifest_paths_for_update, merge_preserved_categories,
-        plugin_changed, should_mark_update_processed,
+        PendingDecision, UpdateStatus, is_missing_repo_error, keep_last_known_versions,
+        manifest_paths_for_update, merge_preserved_categories, plugin_changed, resolve_pending,
+        should_mark_update_processed,
     };
     use crate::github::GitTreeEntry;
     use crate::plugin::Plugin;
@@ -326,6 +398,90 @@ mod tests {
         .unwrap();
         plugin.updated_at = updated_at;
         plugin
+    }
+
+    fn plugin_with_state(pending: bool, version_count: usize) -> Plugin {
+        let mut plugin: Plugin = serde_json::from_value(serde_json::json!({
+            "id": "owner/repo",
+            "name": "Plugin",
+            "source": "https://github.com/owner/repo",
+            "versions": (0..version_count).map(|i| serde_json::json!({
+                "version": format!("1.0.{}", i),
+                "files": [{ "filename": "p.jar", "url": "https://example.com/p.jar" }]
+            })).collect::<Vec<_>>()
+        }))
+        .unwrap();
+        plugin.pending = pending;
+        plugin
+    }
+
+    #[test]
+    fn resolve_pending_deletes_fork_with_both_sides_empty() {
+        let old = plugin_with_state(false, 0);
+        assert_eq!(
+            resolve_pending(&old, true, true),
+            PendingDecision::DeleteFork
+        );
+    }
+
+    #[test]
+    fn resolve_pending_marks_non_fork_zero_version_as_pending() {
+        let old = plugin_with_state(false, 0);
+        assert_eq!(
+            resolve_pending(&old, true, false),
+            PendingDecision::Pending(true)
+        );
+    }
+
+    #[test]
+    fn resolve_pending_downgrades_when_versions_confirmed_gone() {
+        // 版本确认消失(复查通过,非瞬态):降级 pending,不再保留旧状态
+        let old = plugin_with_state(false, 2);
+        assert_eq!(
+            resolve_pending(&old, true, false),
+            PendingDecision::Pending(true)
+        );
+        assert_eq!(
+            resolve_pending(&old, true, true),
+            PendingDecision::Pending(true)
+        );
+    }
+
+    #[test]
+    fn keep_last_known_versions_restores_versions_on_transient_empty() {
+        // 新空旧有且复查未确认(瞬态失败):沿用盘上旧版本,等下轮裁决
+        let old = plugin_with_state(false, 2);
+        let mut rebuilt = plugin_with_state(false, 0);
+
+        keep_last_known_versions(&old, &mut rebuilt);
+
+        assert_eq!(rebuilt.versions.len(), 2);
+        assert_eq!(rebuilt.versions[0].version, old.versions[0].version);
+        assert_eq!(rebuilt.versions[1].version, old.versions[1].version);
+    }
+
+    #[test]
+    fn resolve_pending_promotes_once_versions_appear() {
+        let old = plugin_with_state(true, 0);
+        assert_eq!(
+            resolve_pending(&old, false, false),
+            PendingDecision::Pending(false)
+        );
+        assert_eq!(
+            resolve_pending(&old, false, true),
+            PendingDecision::Pending(false)
+        );
+    }
+
+    #[test]
+    fn plugin_changed_detects_pending_transition() {
+        let mut old = plugin_with_updated_at(1_612_325_106);
+        old.pending = true;
+
+        let mut new = plugin_with_updated_at(1_612_325_106);
+        new.pending = false;
+
+        assert!(plugin_changed(&old, &new));
     }
 
     #[test]

@@ -95,7 +95,7 @@
 <script setup lang="ts">
 import { Avatar, OverflowMenu } from '@modrinth/ui'
 import { computed, reactive, watch } from 'vue'
-import { usePlugin, findPluginIdsByName } from '~/composables/usePlugins'
+import { findPluginIdsByName, usePlugin } from '~/composables/usePlugins'
 
 const props = defineProps<{
   project: AllayIndex.ProjectView
@@ -149,6 +149,8 @@ async function loadDependencyPlugins() {
     for (const fullId of matchedIds) {
       if (fullId.includes('/')) {
         const { data } = await usePlugin(fullId)
+        // pending plugins have no published detail page: don't link them
+        if (data.value?.pending === true) continue
         const owner = fullId.split('/')[0]
         entries.push({
           id: fullId,

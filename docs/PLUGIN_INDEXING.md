@@ -35,7 +35,7 @@ If your plugin supports both NukkitX and Nukkit-MOT, `nukkit-plugin` is acceptab
 
 **How to add a topic:** GitHub repository -> About -> gear icon -> Topics.
 
-> **Fork note:** If your plugin repository is a fork, adding the correct topic is especially important. Forks that have no commits of their own ahead of the upstream repository are treated as mirrors and skipped.
+> **Fork note:** If your plugin repository is a fork, adding the correct topic is especially important. Forks that publish no release of their own are treated as mirror copies and skipped.
 
 ## What To Do For Each Runtime
 
@@ -165,9 +165,18 @@ Examples:
 
 ## Versions And Downloads
 
-Your repository can be indexed without a GitHub Release.
+Your repository can be indexed without a GitHub Release, but a plugin with no
+installable version at all (no GitHub Release `.jar` and no `ci-` CI snapshot)
+is kept in a **pending** state: it stays tracked, yet does not appear in
+search results or the public API until its first version shows up.
 
-However, if you want users to see downloadable versions on NukkitHub, publish releases this way:
+Forks are expected to provide their own releases: a fork without any release
+of its own is treated as a mirror copy and is not indexed. Forks that adapt a
+plugin to another runtime (for example a Nukkit plugin reworked for
+PowerNukkitX) usually publish their own releases and are indexed normally.
+
+If you want users to see downloadable versions on NukkitHub, publish releases
+this way:
 
 1. Create a GitHub Release
 2. Attach one or more `.jar` files
@@ -273,14 +282,16 @@ If no open-source license is found, the project may appear as All Rights Reserve
 
 Your plugin may be skipped or removed if any of the following is true:
 
-| Situation                                                                  | Result                   |
-| -------------------------------------------------------------------------- | ------------------------ |
-| Repository is private                                                      | Not indexed              |
-| Repository is archived                                                     | Removed or skipped       |
-| Repository is a template                                                   | Skipped                  |
-| Repository has `noindex` topic                                             | Skipped or removed       |
-| No supported manifest exists in `src/main/resources/`                      | Not discovered correctly |
-| The runtime is unclear and there is no matching topic or dependency signal | Module may be skipped    |
+| Situation                                                                  | Result                                         |
+| -------------------------------------------------------------------------- | ---------------------------------------------- |
+| Repository is private                                                      | Not indexed                                    |
+| Repository is archived                                                     | Removed or skipped                             |
+| Repository is a template                                                   | Skipped                                        |
+| Repository has `noindex` topic                                             | Skipped or removed                             |
+| No supported manifest exists in `src/main/resources/`                      | Not discovered correctly                       |
+| The runtime is unclear and there is no matching topic or dependency signal | Module may be skipped                          |
+| Fork without any release of its own                                        | Not indexed (mirror)                           |
+| No installable version (no Release `.jar`, no CI snapshot)                 | Indexed as pending, hidden from search and API |
 
 To remove your plugin manually, add the `noindex` topic.
 
@@ -325,11 +336,18 @@ Check these items in order:
 4. manifest exists in `src/main/resources/`, or your PNX plugin uses `@PluginMeta`
 5. the runtime topic is set correctly
 6. build files clearly reference the runtime you are targeting
-7. wait up to 1 hour for the next indexing cycle
+7. it has at least one installable version (a GitHub Release with a `.jar`,
+   or a `ci-` snapshot from motci) — otherwise it is indexed as pending and
+   stays hidden until the first version appears
+8. if it is a fork, it has a release of its own — forks without releases are
+   treated as mirror copies
+9. wait up to 1 hour for the next indexing cycle
 
 ### My project is indexed but has no downloads
 
-Make sure you created a **GitHub Release** and attached a `.jar` file.
+Make sure you created a **GitHub Release** and attached a `.jar` file. Without
+any installable version the project stays pending: tracked, but hidden from
+search and the API.
 
 ### My runtime is detected incorrectly
 

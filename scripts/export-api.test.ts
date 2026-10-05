@@ -4,6 +4,10 @@
  */
 
 /// <reference types="bun-types" />
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import { describe, expect, test } from 'bun:test'
 
 import type AllayIndex from '../src/types/allayhub-index'
@@ -17,6 +21,7 @@ import {
   mapSearchHit,
   mapVersion,
   pickLatestVersion,
+  readIndexPlugins,
   resolveVersionSlugs,
   sortVersionsDesc,
   toIso,
@@ -612,5 +617,46 @@ describe('compareVersionStrings', () => {
       '2.0.0',
       '10.0.0',
     ])
+  })
+})
+
+describe('readIndexPlugins', () => {
+  test('skips pending plugins that have no installable version', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'nukkithub-api-'))
+    const indexDir = join(dir, 'NukkitHubIndex', 'owner')
+    mkdirSync(indexDir, { recursive: true })
+    writeFileSync(
+      join(indexDir, 'ready.json'),
+      JSON.stringify({
+        id: 'owner/ready',
+        name: 'Ready',
+        source: 'https://github.com/owner/ready',
+        versions: [
+          {
+            version: '1.0.0',
+            published_at: 1_700_000_000,
+            files: [{ url: 'https://example.com/a.jar', filename: 'a.jar' }],
+          },
+        ],
+      }),
+    )
+    writeFileSync(
+      join(indexDir, 'waiting.json'),
+      JSON.stringify({
+        id: 'owner/waiting',
+        name: 'Waiting',
+        source: 'https://github.com/owner/waiting',
+        versions: [],
+        pending: true,
+      }),
+    )
+
+    const prev = process.cwd()
+    process.chdir(dir)
+    try {
+      expect(readIndexPlugins().map((p) => p.id)).toEqual(['owner/ready'])
+    } finally {
+      process.chdir(prev)
+    }
   })
 })

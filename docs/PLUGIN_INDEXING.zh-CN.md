@@ -12,9 +12,11 @@
 4. **不要添加 `noindex` topic**
 5. **将清单文件放在标准路径中**
    - `src/main/resources/plugin.yml`
+   - `src/main/resources/nukkit.yml`（所有 Nukkit 系加载器均支持）
    - 对于以 PowerNukkitX 为主的模块，可使用 `src/main/resources/powernukkitx.yml`
+   - 或在主类上使用 PNX 的 `@PluginMeta` 注解（见下文 PowerNukkitX 部分）
 6. **添加与你目标运行时匹配的 topic**
-7. **完善 `plugin.yml` / `powernukkitx.yml` 与 `README.md`**
+7. **完善清单文件与 `README.md`**
 
 如果你除了清单文件之外只打算多做一件事，那就先加上正确的 topic。这样能显著提高被发现的可靠性。
 
@@ -33,7 +35,7 @@
 
 **如何添加 topic：** GitHub 仓库 -> About -> 齿轮图标 -> Topics。
 
-> **Fork 说明：** 如果你的插件仓库是 fork，添加正确的 topic 会更加重要。相对上游没有任何自己的提交的 fork 会被视为镜像而跳过。
+> **Fork 说明：** 如果你的插件仓库是 fork，添加正确的 topic 会更加重要。没有发布任何自有 release 的 fork 会被视为镜像副本而跳过。
 
 ## 各运行时应该怎么做
 
@@ -65,15 +67,39 @@
 
 ### PowerNukkitX (`pnx`)
 
-推荐配置：
+推荐配置——支持两种风格：
+
+风格 A——手写清单：
 
 - 优先使用 `src/main/resources/powernukkitx.yml`
 - 添加 `powernukkitx-plugin` 或 `pnx-plugin`
 - 引用 PowerNukkitX 相关依赖，例如：
-  - `org.powernukkitx`
+  - `org.powernukkitx`（现行包名）
   - `powernukkitx`
+  - `repo.powernukkitx.org`
 
-使用 `powernukkitx.yml` 是让 PowerNukkitX 模块被正确识别的最明确方式。
+风格 B——`@PluginMeta` 注解（PNX 官方模板风格）：
+
+- 在主类（继承 `PluginBase` 的那个类）上标注 `@PluginMeta`
+- 在注解中声明 `name`、`version` 和 `api`；`authors`、`description`、`website`、`depend`、`softDepend` 也会被索引
+- 无需 yml 文件——PNX 注解处理器会在构建时生成 `powernukkitx.yml`
+- 添加 `powernukkitx-plugin` 或 `pnx-plugin` topic，确保仓库被可靠发现
+
+示例：
+
+```java
+@PluginMeta(
+        name = "MyPlugin",
+        version = "1.0.0",
+        api = {"3.0.0"},
+        authors = {"myname"},
+        description = "A short description"
+)
+public class MyPlugin extends PluginBase {
+}
+```
+
+使用 `powernukkitx.yml` 或 `@PluginMeta` 是让 PowerNukkitX 模块可被索引的最明确方式。
 
 ### Lumi (`lumi`)
 
@@ -83,6 +109,7 @@
 - 添加 `lumi-plugin` topic
 - 在 Gradle 或 Maven 中显式引用 Lumi，例如：
   - `repo.lumi.su`
+  - `repo.luminiadev.com` 作为共享 Nukkit 标识之外的辅助仓库提示（旧域名）
   - `com.koshakmine:lumi`
   - 包含 `com.koshakmine` 与 `lumi` 的 Maven 坐标
 
@@ -91,7 +118,9 @@
 至少需要在标准路径中存在一个受支持的清单文件：
 
 - `src/main/resources/plugin.yml`
+- `src/main/resources/nukkit.yml`
 - `src/main/resources/powernukkitx.yml`
+- `src/main/java` 下带 `@PluginMeta` 注解的主类（仅限 PowerNukkitX）
 
 示例：
 
@@ -136,15 +165,30 @@ softdepend: []
 
 ## 版本与下载
 
-你的仓库即使没有 GitHub Release，也可以被收录。
+你的仓库即使没有 GitHub Release 也可以被收录，但完全没有任何可安装
+版本（没有 GitHub Release `.jar`，也没有 `ci-` CI 快照）的插件会进入
+**pending**（待定）状态：它仍被跟踪，但在第一个版本出现之前不会出现在
+搜索结果或公开 API 中。
 
-但如果你希望用户在 NukkitHub 上看到可下载的版本，请按如下方式发布：
+fork 需要提供自己的 release：没有任何自有 release 的 fork 会被视为
+镜像副本，不予收录。把插件改造到其他运行时的 fork（例如为
+PowerNukkitX 重做的 Nukkit 插件）通常会发布自己的 release，可以正常
+收录。
+
+如果你希望用户在 NukkitHub 上看到可下载的版本，请按如下方式发布：
 
 1. 创建 GitHub Release
 2. 附加一个或多个 `.jar` 文件
 3. 使用 Release 标题和正文作为版本标题与更新日志
 
-只有 **GitHub Releases** 会被索引为插件版本。
+**GitHub Releases** 是插件版本的主要来源。
+
+此外，如果仓库在 [motci.cn](https://motci.cn)（Nukkit-MOT 插件的社区
+Jenkins）上有任务，NukkitHub 会把最新一次成功构建作为额外的一个快照
+版本附加进来，命名为 `ci-{build}` 并标记为预发布。下载链接指向
+Jenkins 构建产物。
+
+在多模块仓库中，CI 产物只会附加到插件名与产物文件名匹配的那个模块。
 
 ## 编程访问（公开 API）
 
@@ -155,9 +199,11 @@ Modrinth API：
   （或按运行时预过滤的 `/api/v2/search/{loader}.json`）
 - 某插件的最新可安装版本：`/api/v2/project/{owner}/{name}/latest.json`
 
-要出现下载链接，需要发布带 `.jar` 附件的 GitHub Release（见上文）。
+下载来自 GitHub Release 的 `.jar` 资产（见上文）；仓库在
+[motci.cn](https://motci.cn) 上构建时，还包括最新一次成功 CI 构建的
+预发布快照版本。
 完整端点参考、响应结构以及面向 Modrinth 工具的兼容性说明见
-[API.md](https://github.com/MemoriesOfTime/NukkitHub/blob/master/docs/API.md)。
+[API.zh-CN.md](https://github.com/MemoriesOfTime/NukkitHub/blob/master/docs/API.zh-CN.md)。
 
 ## 分类
 
@@ -233,14 +279,16 @@ NukkitHub 会尝试从以下位置读取许可证信息：
 
 如果满足以下任一情况，插件可能会被跳过或移除：
 
-| 情况                                           | 结果           |
-| ---------------------------------------------- | -------------- |
-| 仓库为私有                                     | 不会被收录     |
-| 仓库已归档                                     | 被移除或跳过   |
-| 仓库是模板                                     | 被跳过         |
-| 仓库带有 `noindex` topic                       | 被跳过或移除   |
-| `src/main/resources/` 下不存在受支持的清单文件 | 无法被正确发现 |
-| 运行时不明确，且没有匹配的 topic 或依赖信号    | 模块可能被跳过 |
+| 情况                                           | 结果                             |
+| ---------------------------------------------- | -------------------------------- |
+| 仓库为私有                                     | 不会被收录                       |
+| 仓库已归档                                     | 被移除或跳过                     |
+| 仓库是模板                                     | 被跳过                           |
+| 仓库带有 `noindex` topic                       | 被跳过或移除                     |
+| `src/main/resources/` 下不存在受支持的清单文件 | 无法被正确发现                   |
+| 运行时不明确，且没有匹配的 topic 或依赖信号    | 模块可能被跳过                   |
+| 没有任何自有 release 的 fork                   | 不收录（镜像）                   |
+| 无可安装版本（无 Release `.jar`、无 CI 快照）  | 收录为 pending，隐藏于搜索与 API |
 
 如果你想手动移除插件，请添加 `noindex` topic。
 
@@ -282,14 +330,19 @@ my-nukkit-plugin/
 1. 仓库是否为公开状态
 2. 仓库是否未归档
 3. 仓库是否没有 `noindex` topic
-4. 清单文件是否存在于 `src/main/resources/`
+4. 清单文件是否存在于 `src/main/resources/`，或 PNX 插件是否使用了 `@PluginMeta`
 5. 运行时 topic 是否设置正确
 6. 构建文件是否清晰引用了目标运行时
-7. 等待最多 1 小时以完成下一轮索引
+7. 是否至少有一个可安装版本（带 `.jar` 的 GitHub Release，或来自 motci 的
+   `ci-` 快照）——否则会被收录为 pending，在首个版本出现前保持隐藏
+8. 如果是 fork，是否有自己的 release——没有 release 的 fork 会被视为
+   镜像副本
+9. 等待最多 1 小时以完成下一轮索引
 
 ### 我的项目已被收录，但没有下载项
 
-请确认你已创建 **GitHub Release**，并附加了 `.jar` 文件。
+请确认你已创建 **GitHub Release**，并附加了 `.jar` 文件。在出现任何
+可安装版本之前，项目会保持 pending：被跟踪，但对搜索和 API 隐藏。
 
 ### 我的运行时识别错误
 

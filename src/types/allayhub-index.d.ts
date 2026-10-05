@@ -70,6 +70,9 @@ declare namespace AllayIndex {
     api_version: string // Current API version from main branch
     server_version?: string // Server API version if used
     dependencies?: Dependency[] // Dependencies from main branch
+
+    /** Indexed but without any installable version; hidden from search, API and pages */
+    pending?: boolean
   }
 
   interface Author {

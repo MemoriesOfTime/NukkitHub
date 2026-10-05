@@ -62,10 +62,11 @@ rebuilds hourly and deploys trail it.
 | `GET {api_base}/v2/meta.json`                                            | Index metadata, counts, canonical `api_base`                                                                            |
 
 `{owner}/{name}` is the GitHub-derived id (multi-module repositories use
-`owner/repo--module-suffix`). Plugin ids with no indexed downloads (no GitHub
-Release and no CI build) simply have an empty `versions` array and no
-`latest`. Visiting `{api_base}/` serves a small human-readable endpoint index
-page.
+`owner/repo--module-suffix`). Every project in the API has at least one
+installable version: plugins without any indexed download (no GitHub Release
+and no CI build) are tracked by the index but excluded from the API until
+their first version appears. Visiting `{api_base}/` serves a small
+readable index page.
 
 Version numbers come from GitHub Release tags. Additionally, repositories that
 build on [motci.cn](https://motci.cn) carry one snapshot version numbered

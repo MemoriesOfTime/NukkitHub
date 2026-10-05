@@ -78,11 +78,18 @@ pub fn artifact_url(job_url: &str, build_number: u64, relative_path: &str) -> St
 
 pub struct JenkinsIndex {
     builds: HashMap<String, JenkinsBuildInfo>, // repo_full_name -> build info
+    /// 索引是否成功加载。失败时 builds 为空,调用方必须把"无构建"视为
+    /// "无法确认"而非"确实没有",否则 motci 故障期间会误清版本/误删 fork
+    loaded: bool,
 }
 
 impl JenkinsIndex {
     pub fn get(&self, repo_full_name: &str) -> Option<&JenkinsBuildInfo> {
         self.builds.get(&repo_full_name.to_lowercase())
+    }
+
+    pub fn loaded(&self) -> bool {
+        self.loaded
     }
 
     pub fn repo_names(&self) -> impl Iterator<Item = &str> {
@@ -102,6 +109,7 @@ pub fn init_jenkins() {
             warn!(error = %e, "Failed to load Jenkins index, continuing without it");
             JenkinsIndex {
                 builds: HashMap::new(),
+                loaded: false,
             }
         }
     });
@@ -112,6 +120,7 @@ pub fn jenkins_index() -> &'static JenkinsIndex {
         warn!("Jenkins index accessed before init, returning empty");
         JenkinsIndex {
             builds: HashMap::new(),
+            loaded: false,
         }
     })
 }
@@ -133,7 +142,10 @@ fn fetch_jenkins_index() -> Result<JenkinsIndex, String> {
         process_job(job, &mut builds);
     }
 
-    Ok(JenkinsIndex { builds })
+    Ok(JenkinsIndex {
+        builds,
+        loaded: true,
+    })
 }
 
 fn process_job(job: &JenkinsJob, builds: &mut HashMap<String, JenkinsBuildInfo>) {
