@@ -85,7 +85,7 @@ pub struct Links {
     pub discord: String,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct GalleryItem {
     #[serde(default)]
     pub url: String,

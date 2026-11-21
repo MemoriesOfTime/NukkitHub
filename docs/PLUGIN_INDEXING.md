@@ -35,7 +35,7 @@ If your plugin supports both NukkitX and Nukkit-MOT, `nukkit-plugin` is acceptab
 
 **How to add a topic:** GitHub repository -> About -> gear icon -> Topics.
 
-> **Fork note:** If your plugin repository is a fork, adding the correct topic is especially important. Forks that publish no release of their own are treated as mirror copies and skipped.
+> **Fork note:** If your plugin repository is a fork, adding the correct topic is especially important. Forks that publish no installable release of their own (a release with a `.jar` asset) are treated as mirror copies and skipped.
 
 ## What To Do For Each Runtime
 
@@ -170,10 +170,11 @@ installable version at all (no GitHub Release `.jar` and no `ci-` CI snapshot)
 is kept in a **pending** state: it stays tracked, yet does not appear in
 search results or the public API until its first version shows up.
 
-Forks are expected to provide their own releases: a fork without any release
-of its own is treated as a mirror copy and is not indexed. Forks that adapt a
-plugin to another runtime (for example a Nukkit plugin reworked for
-PowerNukkitX) usually publish their own releases and are indexed normally.
+Forks are expected to provide their own releases: a fork without an installable
+release of its own (a release with a `.jar` asset) is treated as a mirror copy
+and is not indexed. Forks that adapt a plugin to another runtime (for example a
+Nukkit plugin reworked for PowerNukkitX) usually publish their own releases and
+are indexed normally.
 
 If you want users to see downloadable versions on NukkitHub, publish releases
 this way:
@@ -189,8 +190,10 @@ Additionally, if the repository has a job on [motci.cn](https://motci.cn)
 successful build as one extra snapshot version, named `ci-{build}` and flagged
 as a prerelease. The download links point to the Jenkins build artifacts.
 
-In multi-module repositories, a CI artifact is only attached to the module
-whose plugin name matches the artifact filename.
+In multi-module repositories, a CI artifact is attached only to the module
+whose directory name (or target runtime) matches the artifact filename. If the
+artifact name carries no module marker, the plugin name and repository name are
+used as a fallback.
 
 ## Programmatic Access (Public API)
 
@@ -284,13 +287,13 @@ Your plugin may be skipped or removed if any of the following is true:
 
 | Situation                                                                  | Result                                         |
 | -------------------------------------------------------------------------- | ---------------------------------------------- |
-| Repository is private                                                      | Not indexed                                    |
+| Repository is private                                                      | Not indexed / removed                          |
 | Repository is archived                                                     | Removed or skipped                             |
-| Repository is a template                                                   | Skipped                                        |
+| Repository is a template                                                   | Removed or skipped                             |
 | Repository has `noindex` topic                                             | Skipped or removed                             |
 | No supported manifest exists in `src/main/resources/`                      | Not discovered correctly                       |
 | The runtime is unclear and there is no matching topic or dependency signal | Module may be skipped                          |
-| Fork without any release of its own                                        | Not indexed (mirror)                           |
+| Fork without an installable release of its own                             | Removed or skipped (mirror)                    |
 | No installable version (no Release `.jar`, no CI snapshot)                 | Indexed as pending, hidden from search and API |
 
 To remove your plugin manually, add the `noindex` topic.
@@ -339,8 +342,8 @@ Check these items in order:
 7. it has at least one installable version (a GitHub Release with a `.jar`,
    or a `ci-` snapshot from motci) — otherwise it is indexed as pending and
    stays hidden until the first version appears
-8. if it is a fork, it has a release of its own — forks without releases are
-   treated as mirror copies
+8. if it is a fork, it has an installable release of its own (a release with
+   a `.jar` asset) — forks without one are treated as mirror copies
 9. wait up to 1 hour for the next indexing cycle
 
 ### My project is indexed but has no downloads

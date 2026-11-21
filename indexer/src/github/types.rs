@@ -38,6 +38,9 @@ pub struct Repository {
     // 追加在末尾且带 serde(default) 才能兼容旧缓存条目
     #[serde(default)]
     pub parent: Option<RepositoryParent>,
+    // 私有仓库绝不能进公开索引;字段同样必须留在末尾
+    #[serde(default)]
+    pub private: bool,
 }
 
 /// fork 仓库的直接上游(GitHub repo 接口中 parent 的子集)

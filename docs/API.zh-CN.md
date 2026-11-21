@@ -205,6 +205,9 @@ curl -s 'https://plugins.nukkit-mot.com/api/v2/search?facets=%5B%5B%22loaders%3A
 ## 数据注意事项
 
 - `downloads` 目前**恒为 0**（保留占位字段）。
+- `files` 只列出该插件模块可安装的 jar：Release 的 `-sources`/`-javadoc`
+  附件以及其他平台的产物会被剔除。每个版本恰好一个文件带
+  `"primary": true`，且排在列表第一位。
 - `files[].hashes` 在来源提供 digest 时携带 `sha256`。GitHub 仅对约 2025 年
   中之后上传的 Release 资产提供 digest；更早的资产与 `ci-{build}` CI 产物为
   `"hashes": {}`。覆盖率见 `meta.counts.files_with_hashes`。

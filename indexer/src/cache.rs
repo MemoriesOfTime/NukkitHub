@@ -1,5 +1,6 @@
 use crate::github::{
     CompareResult, Contributor, GitTree, Owner, Release, Repository, RepositoryLicense,
+    RepositoryParent,
 };
 use flate2::Compression;
 use flate2::read::GzDecoder;
@@ -14,7 +15,9 @@ use tracing::info;
 const CACHE_FILE: &str = ".data_cache.bin.gz";
 
 /// 带版本头的缓存格式(见 from_bytes 的说明)
-const CACHE_MAGIC: &[u8] = b"NHCACHE2";
+const CACHE_MAGIC: &[u8] = b"NHCACHE3";
+/// Repository 加入 private 字段前的缓存格式
+const CACHE_MAGIC_V2: &[u8] = b"NHCACHE2";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheEntry<T> {
@@ -98,6 +101,73 @@ impl From<LegacyRepository> for Repository {
             default_branch: legacy.default_branch,
             contributors_url: legacy.contributors_url,
             parent: None,
+            private: false,
+        }
+    }
+}
+
+// Repository 尚无 private 字段时期(NHCACHE2)的缓存格式(镜像 + 回退升级,理由同上)
+#[derive(Debug, Serialize, Deserialize)]
+struct LegacyPrivateRepository {
+    id: u64,
+    full_name: String,
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    html_url: String,
+    #[serde(default)]
+    stargazers_count: u64,
+    #[serde(default)]
+    forks_count: u64,
+    #[serde(default)]
+    created_at: String,
+    #[serde(default)]
+    updated_at: String,
+    #[serde(default)]
+    pushed_at: String,
+    owner: Owner,
+    #[serde(default)]
+    license: Option<RepositoryLicense>,
+    #[serde(default)]
+    topics: Vec<String>,
+    #[serde(default)]
+    is_template: bool,
+    #[serde(default)]
+    fork: bool,
+    #[serde(default)]
+    archived: bool,
+    #[serde(default)]
+    default_branch: Option<String>,
+    #[serde(default)]
+    contributors_url: String,
+    #[serde(default)]
+    parent: Option<RepositoryParent>,
+}
+
+impl From<LegacyPrivateRepository> for Repository {
+    fn from(legacy: LegacyPrivateRepository) -> Self {
+        Self {
+            id: legacy.id,
+            full_name: legacy.full_name,
+            name: legacy.name,
+            description: legacy.description,
+            html_url: legacy.html_url,
+            stargazers_count: legacy.stargazers_count,
+            forks_count: legacy.forks_count,
+            created_at: legacy.created_at,
+            updated_at: legacy.updated_at,
+            pushed_at: legacy.pushed_at,
+            owner: legacy.owner,
+            license: legacy.license,
+            topics: legacy.topics,
+            is_template: legacy.is_template,
+            fork: legacy.fork,
+            archived: legacy.archived,
+            default_branch: legacy.default_branch,
+            contributors_url: legacy.contributors_url,
+            parent: legacy.parent,
+            private: false,
         }
     }
 }
@@ -164,6 +234,25 @@ impl From<LegacyRelease> for crate::github::Release {
     }
 }
 
+/// 升级旧仓库缓存并清空 ETag:private 字段在旧格式中不存在,必须强制一次
+/// 200 全量取回,否则 304 会让旧结构体的 private=false 一直生效。
+fn upgrade_legacy_repositories<T: Into<crate::github::Repository>>(
+    repositories: HashMap<String, CacheEntry<T>>,
+) -> HashMap<String, CacheEntry<crate::github::Repository>> {
+    repositories
+        .into_iter()
+        .map(|(key, entry)| {
+            (
+                key,
+                CacheEntry {
+                    data: entry.data.into(),
+                    etag: None,
+                },
+            )
+        })
+        .collect()
+}
+
 /// 升级无 digest 的旧 releases 缓存条目。etag 必须清空:digest 只在 200
 /// 响应体里返回,带着旧 etag 重验证只会得到 304,sha256 将永远填不上;
 /// 清空后下一次 sync 对每个仓库做一次全量取回,即可捕获 digest 并以新格式
@@ -202,19 +291,7 @@ struct DataCacheNoParent {
 impl DataCacheNoParent {
     fn upgrade(self) -> DataCache {
         DataCache {
-            repositories: self
-                .repositories
-                .into_iter()
-                .map(|(key, entry)| {
-                    (
-                        key,
-                        CacheEntry {
-                            data: entry.data.into(),
-                            etag: entry.etag,
-                        },
-                    )
-                })
-                .collect(),
+            repositories: upgrade_legacy_repositories(self.repositories),
             trees: self.trees,
             releases: upgrade_legacy_releases(self.releases),
             contributors: self.contributors,
@@ -228,7 +305,7 @@ impl DataCacheNoParent {
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct DataCacheNoDigest {
     #[serde(default)]
-    repositories: HashMap<String, CacheEntry<Repository>>,
+    repositories: HashMap<String, CacheEntry<LegacyPrivateRepository>>,
     #[serde(default)]
     trees: HashMap<String, CacheEntry<GitTree>>,
     #[serde(default)]
@@ -244,7 +321,7 @@ struct DataCacheNoDigest {
 impl DataCacheNoDigest {
     fn upgrade(self) -> DataCache {
         DataCache {
-            repositories: self.repositories,
+            repositories: upgrade_legacy_repositories(self.repositories),
             trees: self.trees,
             releases: upgrade_legacy_releases(self.releases),
             contributors: self.contributors,
@@ -254,9 +331,39 @@ impl DataCacheNoDigest {
     }
 }
 
+/// Repository 尚无 private 字段时期(NHCACHE2)的缓存格式
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct DataCacheNoPrivate {
+    #[serde(default)]
+    repositories: HashMap<String, CacheEntry<LegacyPrivateRepository>>,
+    #[serde(default)]
+    trees: HashMap<String, CacheEntry<GitTree>>,
+    #[serde(default)]
+    releases: HashMap<String, CacheEntry<Vec<Release>>>,
+    #[serde(default)]
+    contributors: HashMap<String, CacheEntry<Vec<Contributor>>>,
+    #[serde(default)]
+    raw_contents: HashMap<String, CacheEntry<String>>,
+    #[serde(default)]
+    compares: HashMap<String, CacheEntry<CompareResult>>,
+}
+
+impl DataCacheNoPrivate {
+    fn upgrade(self) -> DataCache {
+        DataCache {
+            repositories: upgrade_legacy_repositories(self.repositories),
+            trees: self.trees,
+            releases: self.releases,
+            contributors: self.contributors,
+            raw_contents: self.raw_contents,
+            compares: self.compares,
+        }
+    }
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct LegacyDataCache {
-    repositories: HashMap<String, CacheEntry<Repository>>,
+    repositories: HashMap<String, CacheEntry<LegacyRepository>>,
     trees: HashMap<String, CacheEntry<GitTree>>,
 }
 
@@ -297,6 +404,17 @@ impl DataCache {
             return Ok(cache);
         }
 
+        if let Some(stripped) = bytes.strip_prefix(CACHE_MAGIC_V2) {
+            let cache = postcard::from_bytes::<DataCacheNoPrivate>(stripped)
+                .map_err(|e| format!("postcard decode error: {}", e))?
+                .upgrade();
+            let count = cache.entry_count();
+            if count > 0 {
+                info!(entries = count, "Loaded pre-private data cache");
+            }
+            return Ok(cache);
+        }
+
         if let Ok(no_digest) = postcard::from_bytes::<DataCacheNoDigest>(bytes) {
             let cache = no_digest.upgrade();
             let count = cache.entry_count();
@@ -318,7 +436,7 @@ impl DataCache {
         let legacy = postcard::from_bytes::<LegacyDataCache>(bytes)
             .map_err(|e| format!("postcard decode error: {}", e))?;
         let cache = Self {
-            repositories: legacy.repositories,
+            repositories: upgrade_legacy_repositories(legacy.repositories),
             trees: legacy.trees,
             ..Self::default()
         };
@@ -457,7 +575,60 @@ mod tests {
         assert!(entry.data.fork);
         assert_eq!(entry.data.default_branch.as_deref(), Some("master"));
         assert!(entry.data.parent.is_none());
-        assert_eq!(entry.etag.as_deref(), Some("repo-etag"));
+        // 旧格式没有 private,ETag 必须清空以强制一次全量取回
+        assert!(entry.etag.is_none());
+    }
+
+    // Repository 加入 private 字段后的 NHCACHE3 与 NHCACHE2 不能混读:
+    // 旧格式必须走 DataCacheNoPrivate 兜底,private 回退为 false
+    #[test]
+    fn loads_pre_private_cache_and_upgrades() {
+        let pre_private = DataCacheNoPrivate {
+            repositories: [(
+                "owner/repo".to_string(),
+                CacheEntry {
+                    data: LegacyPrivateRepository {
+                        id: 1,
+                        full_name: "owner/repo".to_string(),
+                        name: "repo".to_string(),
+                        description: None,
+                        html_url: String::new(),
+                        stargazers_count: 0,
+                        forks_count: 0,
+                        created_at: String::new(),
+                        updated_at: String::new(),
+                        pushed_at: String::new(),
+                        owner: Owner {
+                            login: "owner".to_string(),
+                            avatar_url: String::new(),
+                            html_url: String::new(),
+                        },
+                        license: None,
+                        topics: Vec::new(),
+                        is_template: false,
+                        fork: false,
+                        archived: false,
+                        default_branch: Some("main".to_string()),
+                        contributors_url: String::new(),
+                        parent: None,
+                    },
+                    etag: Some("repo-etag".to_string()),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        let mut bytes = CACHE_MAGIC_V2.to_vec();
+        bytes.extend_from_slice(&postcard::to_allocvec(&pre_private).unwrap());
+
+        let cache = DataCache::from_bytes(&bytes).unwrap();
+
+        let entry = cache.repositories.get("owner/repo").unwrap();
+        assert!(!entry.data.private);
+        assert_eq!(entry.data.default_branch.as_deref(), Some("main"));
+        // private 在旧格式里不存在,ETag 必须清空以强制一次全量取回
+        assert!(entry.etag.is_none());
     }
 
     // ReleaseAsset 尚无 digest 字段时期的缓存通过 DataCacheNoDigest 兜底升级:

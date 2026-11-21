@@ -1,6 +1,6 @@
 use super::builder::{
-    BuildOptions, build_plugins_from_nukkit_with_tree_options, find_plugin_manifest_paths,
-    release_jar_files,
+    BuildOptions, TREE_TRUNCATED, build_plugins_from_nukkit_with_tree_options,
+    find_plugin_manifest_paths, release_has_module_files,
 };
 use super::discover::fork_has_own_versions;
 use crate::github::client;
@@ -121,6 +121,14 @@ fn update_plugin(plugin: &Plugin, force: bool) -> Result<UpdateStatus, String> {
         debug!(id = %plugin.id, "Plugin repo archived, marking deleted");
         return Ok(UpdateStatus::Deleted);
     }
+    if repo.private {
+        debug!(id = %plugin.id, "Plugin repo private, marking deleted");
+        return Ok(UpdateStatus::Deleted);
+    }
+    if repo.is_template {
+        debug!(id = %plugin.id, "Plugin repo became a template, marking deleted");
+        return Ok(UpdateStatus::Deleted);
+    }
     if repo.topics.iter().any(|t| t == "noindex") {
         debug!(id = %plugin.id, "Plugin has noindex topic, marking deleted");
         return Ok(UpdateStatus::Deleted);
@@ -135,6 +143,10 @@ fn update_plugin(plugin: &Plugin, force: bool) -> Result<UpdateStatus, String> {
             .clone()
             .unwrap_or_else(|| "main".to_string()),
     ) {
+        Ok(t) if t.truncated => {
+            warn!(id = %plugin.id, "Tree truncated by GitHub, keeping previous record");
+            return Ok(UpdateStatus::Unchanged);
+        }
         Ok(t) => t.tree,
         Err(e) => {
             return Err(format!("Failed to get tree: {}", e));
@@ -147,12 +159,20 @@ fn update_plugin(plugin: &Plugin, force: bool) -> Result<UpdateStatus, String> {
         return Ok(UpdateStatus::Deleted);
     }
 
-    let new_plugins = build_plugins_from_nukkit_with_tree_options(
+    // 读取失败现在会以 Err 返回,不会把瞬态问题当成模块删除。
+    let new_plugins = match build_plugins_from_nukkit_with_tree_options(
         &repo,
         &manifest_paths,
         Some(tree),
         BuildOptions::without_ai_categories(),
-    );
+    ) {
+        Ok(plugins) => plugins,
+        Err(e) if e == TREE_TRUNCATED => {
+            warn!(id = %plugin.id, "Tree truncated by GitHub, keeping previous record");
+            return Ok(UpdateStatus::Unchanged);
+        }
+        Err(e) => return Err(e),
+    };
 
     let new_plugin = new_plugins.into_iter().find(|p| p.id == plugin.id);
 
@@ -169,11 +189,10 @@ fn update_plugin(plugin: &Plugin, force: bool) -> Result<UpdateStatus, String> {
     merge_preserved_categories(plugin, &mut new_plugin);
 
     // 版本终审。两条破坏性路径都要求"确认"而非"缺失":
-    // - 新空旧有:builder 的 get_releases 失败会被静默成空列表,复查确认
-    //   版本真消失了才放行清空,否则沿用盘上旧版本
+    // - 新空旧有:复查确认版本真消失了才放行清空,否则沿用盘上旧版本
     // - fork 双空:向 GitHub 确认 fork 确无自身 release 才删除
     if new_plugin.versions.is_empty() && !plugin.versions.is_empty() {
-        if versions_gone_confirmed(owner, repo_name) {
+        if versions_gone_confirmed(plugin, owner, repo_name) {
             debug!(id = %plugin.id, "Versions gone, downgrading to pending");
         } else {
             keep_last_known_versions(plugin, &mut new_plugin);
@@ -230,15 +249,22 @@ fn keep_last_known_versions(old: &Plugin, new_plugin: &mut Plugin) {
 
 /// 复查版本是否真的消失。成功响应有 ETag 缓存(builder 刚查过则为零成本),
 /// 仅当 motci 索引加载正常(否则 motci-only 插件的快照消失无法区分故障与
-/// 真没版本)且查询成功、所有 release 都无 .jar 资产才确认;其余视为瞬态
-fn versions_gone_confirmed(owner: &str, repo_name: &str) -> bool {
+/// 真没版本)且查询成功、所有 release 对本模块都不产出可安装文件才确认。
+fn versions_gone_confirmed(plugin: &Plugin, owner: &str, repo_name: &str) -> bool {
     if !crate::jenkins::jenkins_index().loaded() {
         return false;
     }
     match client().get_releases(owner, repo_name) {
-        Ok(releases) => releases
-            .iter()
-            .all(|release| release_jar_files(release).is_empty()),
+        Ok(releases) => releases.iter().all(|release| {
+            release.draft
+                || !release_has_module_files(
+                    release,
+                    &plugin.name,
+                    repo_name,
+                    &plugin.manifest_path,
+                    &plugin.targets,
+                )
+        }),
         Err(_) => false,
     }
 }
@@ -316,6 +342,8 @@ fn plugin_changed(old: &Plugin, new: &Plugin) -> bool {
         || old.manifest_path != new.manifest_path
         || old.detection_confidence != new.detection_confidence
         || old.summary != new.summary
+        || old.description != new.description
+        || old.gallery != new.gallery
         || old.updated_at != new.updated_at
         || old.stars != new.stars
         || old.downloads != new.downloads
@@ -348,7 +376,7 @@ mod tests {
         should_mark_update_processed,
     };
     use crate::github::GitTreeEntry;
-    use crate::plugin::Plugin;
+    use crate::plugin::{GalleryItem, Plugin};
 
     fn tree_with_paths(paths: &[&str]) -> Vec<GitTreeEntry> {
         paths
@@ -501,6 +529,25 @@ mod tests {
         new.categories = vec!["economy".to_string()];
 
         assert!(plugin_changed(&old, &new));
+    }
+
+    // README 处理结果(长描述、图库)变化也需要重写 JSON,
+    // 否则 gallery 死链与徽章链接修复对存量条目不会生效
+    #[test]
+    fn plugin_changed_detects_description_and_gallery_changes() {
+        let old = plugin_with_updated_at(1_612_325_106);
+        let mut new = plugin_with_updated_at(1_612_325_106);
+        new.description = "updated readme".to_string();
+        assert!(plugin_changed(&old, &new));
+
+        let mut with_gallery = plugin_with_updated_at(1_612_325_106);
+        with_gallery.gallery = vec![GalleryItem {
+            url: "https://example.com/a.png".to_string(),
+            title: String::new(),
+            description: String::new(),
+            created: String::new(),
+        }];
+        assert!(plugin_changed(&old, &with_gallery));
     }
 
     // sha256 回填场景:已有索引无 sha256,重取后文件带上 sha256,

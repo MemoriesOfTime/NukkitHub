@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -17,8 +18,53 @@ fn is_relative_path(src: &str) -> bool {
     !src.starts_with("http://") && !src.starts_with("https://") && !src.starts_with("data:")
 }
 
-fn to_raw_url(src: &str, ctx: &PostProcessContext) -> String {
-    let path = src.trim_start_matches("./");
+/// README 里的图片地址可能带 query/fragment、Markdown title、前导斜杠或
+/// percent-encoding;比较 git tree 前先归一化,避免把存在的图片误判为死链。
+fn normalized_path(src: &str) -> String {
+    let mut path = src.trim();
+    if let Some(index) = path.find(['?', '#']) {
+        path = &path[..index];
+    }
+    if let Some(index) = path.find(" \"") {
+        path = &path[..index];
+    }
+    if let Some(index) = path.find(" '") {
+        path = &path[..index];
+    }
+    let trimmed = path.trim_start_matches("./").trim_start_matches('/');
+    percent_decode(trimmed)
+}
+
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let (Some(high), Some(low)) =
+                (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
+        {
+            decoded.push(high * 16 + low);
+            index += 3;
+            continue;
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn to_raw_url(path: &str, ctx: &PostProcessContext) -> String {
     super::to_raw_url(ctx.owner, ctx.repo, ctx.branch, path)
 }
 
@@ -30,6 +76,7 @@ pub fn process_html_images(
     content: &str,
     ctx: &PostProcessContext,
     gallery: &mut Vec<GalleryItem>,
+    blobs: &HashSet<&str>,
 ) -> String {
     let mut result = content.to_string();
 
@@ -38,9 +85,15 @@ pub fn process_html_images(
         let src = cap.get(1).unwrap().as_str();
 
         if is_relative_path(src) {
-            let raw_url = to_raw_url(src, ctx);
+            let path = normalized_path(src);
+            let raw_url = to_raw_url(&path, ctx);
             let new_tag = full_match.replace(src, &raw_url);
             result = result.replace(full_match, &new_tag);
+
+            // 仓库里不存在的相对图片不进修图库,否则前端会拿到死链。
+            if !blobs.contains(path.as_str()) {
+                continue;
+            }
 
             let title = IMG_ALT_RE
                 .captures(full_match)
@@ -64,6 +117,7 @@ pub fn process_md_images(
     content: &str,
     ctx: &PostProcessContext,
     gallery: &mut Vec<GalleryItem>,
+    blobs: &HashSet<&str>,
 ) -> String {
     let mut result = content.to_string();
 
@@ -73,9 +127,15 @@ pub fn process_md_images(
         let src = cap.get(2).unwrap().as_str();
 
         if is_relative_path(src) {
-            let raw_url = to_raw_url(src, ctx);
+            let path = normalized_path(src);
+            let raw_url = to_raw_url(&path, ctx);
             let new_md = format!("![{}]({})", alt, raw_url);
             result = result.replace(full_match, &new_md);
+
+            // 仓库里不存在的相对图片不进修图库,否则前端会拿到死链。
+            if !blobs.contains(path.as_str()) {
+                continue;
+            }
 
             gallery.push(GalleryItem {
                 url: raw_url,
@@ -87,4 +147,47 @@ pub fn process_md_images(
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::process_md_images;
+    use crate::plugin::GalleryItem;
+    use crate::sync::builder::PostProcessContext;
+    use std::collections::HashSet;
+
+    #[test]
+    fn only_existing_relative_images_reach_gallery() {
+        let ctx = PostProcessContext {
+            owner: "owner",
+            repo: "repo",
+            branch: "main",
+        };
+        let blobs: HashSet<&str> = ["img/there.png", "img/space name.png"]
+            .into_iter()
+            .collect();
+        let mut gallery: Vec<GalleryItem> = Vec::new();
+
+        let result = process_md_images(
+            "![missing](img/missing.png)\n![there](./img/there.png)\n![query](img/there.png?raw=true)\n![encoded](img%2Fspace%20name.png \"title\")",
+            &ctx,
+            &mut gallery,
+            &blobs,
+        );
+
+        assert!(result.contains("raw.githubusercontent.com/owner/repo/main/img/missing.png"));
+        assert_eq!(gallery.len(), 3);
+        assert_eq!(
+            gallery[0].url,
+            "https://raw.githubusercontent.com/owner/repo/main/img/there.png"
+        );
+        assert_eq!(
+            gallery[1].url,
+            "https://raw.githubusercontent.com/owner/repo/main/img/there.png"
+        );
+        assert_eq!(
+            gallery[2].url,
+            "https://raw.githubusercontent.com/owner/repo/main/img/space name.png"
+        );
+    }
 }

@@ -1,12 +1,12 @@
 mod image;
 mod link;
 
-use crate::github::{Contributor, GitTreeEntry, Release, Repository, client};
+use crate::github::{Contributor, GitTreeEntry, Release, ReleaseAsset, Repository, client};
 use crate::jenkins::{JenkinsBuildInfo, artifact_url};
 use crate::plugin::{
     Author, Dependency, GalleryItem, License, Links, Plugin, Version, VersionFile,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use tracing::debug;
 
 fn parse_timestamp(iso_string: &str) -> u64 {
@@ -115,19 +115,29 @@ pub struct PostProcessContext<'a> {
     pub branch: &'a str,
 }
 
-type ImageProcessorFn = fn(&str, &PostProcessContext, &mut Vec<GalleryItem>) -> String;
+type ImageProcessorFn =
+    fn(&str, &PostProcessContext, &mut Vec<GalleryItem>, &HashSet<&str>) -> String;
 type LinkProcessorFn = fn(&str, &PostProcessContext) -> String;
 
 static IMAGE_PROCESSORS: &[ImageProcessorFn] =
     &[image::process_html_images, image::process_md_images];
 static LINK_PROCESSORS: &[LinkProcessorFn] = &[link::process_md_links, link::process_html_links];
 
-fn process_readme(readme: &str, ctx: &PostProcessContext) -> (String, Vec<GalleryItem>) {
+fn process_readme(
+    readme: &str,
+    ctx: &PostProcessContext,
+    tree: &[GitTreeEntry],
+) -> (String, Vec<GalleryItem>) {
     let mut content = readme.to_string();
     let mut gallery = Vec::new();
+    let blobs: HashSet<&str> = tree
+        .iter()
+        .filter(|entry| entry.entry_type == "blob")
+        .map(|entry| entry.path.as_str())
+        .collect();
 
     for processor in IMAGE_PROCESSORS {
-        content = processor(&content, ctx, &mut gallery);
+        content = processor(&content, ctx, &mut gallery, &blobs);
     }
 
     for processor in LINK_PROCESSORS {
@@ -137,11 +147,17 @@ fn process_readme(readme: &str, ctx: &PostProcessContext) -> (String, Vec<Galler
     (content, gallery)
 }
 
-fn get_tree(owner: &str, repo: &str, branch: &str) -> Vec<GitTreeEntry> {
-    client()
+/// 截断的 git tree 会漏掉模块清单与 README 资源,不能当作完整数据使用。
+pub(crate) const TREE_TRUNCATED: &str = "tree truncated by GitHub";
+
+fn get_tree(owner: &str, repo: &str, branch: &str) -> Result<Vec<GitTreeEntry>, String> {
+    let tree = client()
         .get_tree(owner, repo, branch)
-        .map(|t| t.tree)
-        .unwrap_or_default()
+        .map_err(|e| format!("Failed to get tree: {}", e))?;
+    if tree.truncated {
+        return Err(TREE_TRUNCATED.to_string());
+    }
+    Ok(tree.tree)
 }
 
 fn find_logo_url(tree: &[GitTreeEntry], owner: &str, repo: &str, branch: &str) -> Option<String> {
@@ -198,9 +214,18 @@ fn find_gallery_items(
         .collect()
 }
 
+fn manifest_filename(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// 服务端插件加载器真正认识的描述符:NukkitX/Nukkit-MOT 读 nukkit.yml 再读
+/// plugin.yml,PNX 读 powernukkitx.yml → nukkit.yml → plugin.yml。
+fn is_nukkit_descriptor(path: &str) -> bool {
+    manifest_filename(path) == "nukkit.yml"
+}
+
 pub(crate) fn is_plugin_manifest_path(path: &str) -> bool {
-    path.contains("src/main/resources")
-        && MANIFEST_FILENAMES.iter().any(|name| path.ends_with(name))
+    path.contains("src/main/resources") && MANIFEST_FILENAMES.contains(&manifest_filename(path))
 }
 
 /// PNX `@PluginMeta` 注解型清单:源码中没有 yml,由 PNX-APT 在编译期
@@ -283,7 +308,9 @@ fn find_build_file_paths<'a>(tree: &'a [GitTreeEntry], plugin_yml_path: &str) ->
     expected.push("gradle/libs.versions.toml".to_string());
 
     tree.iter()
-        .filter(|e| e.entry_type == "blob" && expected.iter().any(|exp| e.path == *exp))
+        .filter(|e| {
+            e.entry_type == "blob" && expected.iter().any(|exp| e.path.eq_ignore_ascii_case(exp))
+        })
         .map(|e| e.path.as_str())
         .collect()
 }
@@ -401,7 +428,7 @@ fn manifest_implied_targets(
 
     if manifest_paths
         .iter()
-        .any(|path| path.ends_with("powernukkitx.yml"))
+        .any(|path| manifest_filename(path) == "powernukkitx.yml")
     {
         targets.insert("pnx");
         confidence.promote(DetectionConfidence::High);
@@ -413,10 +440,7 @@ fn manifest_implied_targets(
         targets.insert("pnx");
         confidence.promote(DetectionConfidence::High);
     }
-    if manifest_paths
-        .iter()
-        .any(|path| path.ends_with("nukkit.yml"))
-    {
+    if manifest_paths.iter().any(|path| is_nukkit_descriptor(path)) {
         targets.insert("nkx");
         targets.insert("nkmot");
         targets.insert("pnx");
@@ -430,9 +454,13 @@ fn detect_targets(
     tree: &[GitTreeEntry],
     repo: &Repository,
     manifest_paths: &[String],
-) -> Option<TargetDetection> {
-    let (owner, repo_name) = repo.full_name.split_once('/')?;
-    let primary_manifest_path = select_primary_manifest_path(manifest_paths)?;
+) -> Result<Option<TargetDetection>, String> {
+    let Some((owner, repo_name)) = repo.full_name.split_once('/') else {
+        return Ok(None);
+    };
+    let Some(primary_manifest_path) = select_primary_manifest_path(manifest_paths) else {
+        return Ok(None);
+    };
     let mut targets = BTreeSet::new();
     let mut confidence = DetectionConfidence::Low;
 
@@ -447,35 +475,31 @@ fn detect_targets(
     let build_paths = find_build_file_paths(tree, primary_manifest_path);
     if build_paths.is_empty() && targets.is_empty() {
         debug!(repo = %repo.full_name, module = %module_key_from_manifest_path(primary_manifest_path), "No target evidence found");
-        return None;
+        return Ok(None);
     }
 
     for path in &build_paths {
-        match client().get_file_content(owner, repo_name, path) {
-            Ok(content) => {
-                let lower = content.to_lowercase();
-                let (build_targets, build_confidence) = detect_targets_from_build_content(&lower);
+        let content = client()
+            .get_file_content(owner, repo_name, path)
+            .map_err(|e| format!("Failed to read build file {}: {}", path, e))?;
+        let lower = content.to_lowercase();
+        let (build_targets, build_confidence) = detect_targets_from_build_content(&lower);
 
-                if !build_targets.is_empty() {
-                    targets.extend(build_targets);
-                    confidence.promote(build_confidence);
-                }
-            }
-            Err(e) => {
-                debug!(repo = %repo.full_name, file = %path, error = %e, "Failed to read build file");
-            }
+        if !build_targets.is_empty() {
+            targets.extend(build_targets);
+            confidence.promote(build_confidence);
         }
     }
 
     if targets.is_empty() {
         debug!(repo = %repo.full_name, module = %module_key_from_manifest_path(primary_manifest_path), "No supported targets detected");
-        return None;
+        return Ok(None);
     }
 
-    Some(TargetDetection {
+    Ok(Some(TargetDetection {
         targets: ordered_targets(&targets),
         confidence,
-    })
+    }))
 }
 
 fn slugify_segment(value: &str) -> String {
@@ -520,7 +544,7 @@ pub fn build_plugins_from_nukkit_with_tree(
     repo: &Repository,
     manifest_paths: &[String],
     prefetched_tree: Option<Vec<GitTreeEntry>>,
-) -> Vec<Plugin> {
+) -> Result<Vec<Plugin>, String> {
     build_plugins_from_nukkit_with_tree_options(
         repo,
         manifest_paths,
@@ -534,12 +558,12 @@ pub fn build_plugins_from_nukkit_with_tree_options(
     manifest_paths: &[String],
     prefetched_tree: Option<Vec<GitTreeEntry>>,
     options: BuildOptions,
-) -> Vec<Plugin> {
+) -> Result<Vec<Plugin>, String> {
     let (owner, repo_name) = match repo.full_name.split_once('/') {
         Some((o, r)) => (o, r),
         None => {
             debug!(repo = %repo.full_name, "Skip: invalid repo name");
-            return Vec::new();
+            return Ok(Vec::new());
         }
     };
 
@@ -548,13 +572,20 @@ pub fn build_plugins_from_nukkit_with_tree_options(
     let manifest_groups = group_manifest_paths(manifest_paths);
     if manifest_groups.is_empty() {
         debug!(repo = %repo.full_name, "Skip: no plugin manifests found");
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
-    let tree = prefetched_tree.unwrap_or_else(|| get_tree(owner, repo_name, default_branch));
+    let tree = match prefetched_tree {
+        Some(tree) => tree,
+        None => get_tree(owner, repo_name, default_branch)?,
+    };
 
-    let releases = client().get_releases(owner, repo_name).unwrap_or_default();
-    let readme = client().get_readme(owner, repo_name).unwrap_or_default();
+    let releases = client()
+        .get_releases(owner, repo_name)
+        .map_err(|e| format!("Failed to get releases for {}: {}", repo.full_name, e))?;
+    let readme = client()
+        .get_readme(owner, repo_name)
+        .map_err(|e| format!("Failed to get readme for {}: {}", repo.full_name, e))?;
     let repo_categories = detect_categories(repo, &readme, options);
 
     let license = repo.license.as_ref().map_or_else(
@@ -590,7 +621,7 @@ pub fn build_plugins_from_nukkit_with_tree_options(
     let repo_gallery = find_gallery_items(&tree, owner, repo_name, default_branch);
     let contributors = client()
         .get_contributors_by_url(&repo.contributors_url)
-        .unwrap_or_default();
+        .map_err(|e| format!("Failed to get contributors for {}: {}", repo.full_name, e))?;
 
     let is_multi_module = manifest_groups.len() > 1;
     let mut plugins = Vec::new();
@@ -600,13 +631,13 @@ pub fn build_plugins_from_nukkit_with_tree_options(
             continue;
         };
 
-        let Some(target_detection) = detect_targets(&tree, repo, &manifest_group) else {
+        let Some(target_detection) = detect_targets(&tree, repo, &manifest_group)? else {
             debug!(repo = %repo.full_name, manifest = %primary_manifest_path, "Skip: no supported targets detected");
             continue;
         };
 
         let Some((manifest_path, nukkit_yml)) =
-            parse_manifest_group(owner, repo_name, &repo.full_name, &manifest_group)
+            parse_manifest_group(owner, repo_name, &repo.full_name, &manifest_group)?
         else {
             continue;
         };
@@ -627,12 +658,13 @@ pub fn build_plugins_from_nukkit_with_tree_options(
             &manifest_path,
             &target_detection,
             is_multi_module,
+            &tree,
         ) {
             plugins.push(plugin);
         }
     }
 
-    plugins
+    Ok(plugins)
 }
 
 /// 按优先级排列模块内的清单候选:plugin.yml > powernukkitx.yml >
@@ -644,16 +676,12 @@ fn ordered_manifest_candidates(manifest_group: &[String]) -> Vec<&String> {
 }
 
 fn manifest_priority(path: &str) -> u8 {
-    if path.ends_with("plugin.yml") {
-        0
-    } else if path.ends_with("powernukkitx.yml") {
-        1
-    } else if path.ends_with("nukkit.yml") {
-        2
-    } else if is_annotation_manifest_path(path) {
-        3
-    } else {
-        4
+    match manifest_filename(path) {
+        "plugin.yml" => 0,
+        "powernukkitx.yml" => 1,
+        "nukkit.yml" => 2,
+        _ if is_annotation_manifest_path(path) => 3,
+        _ => 4,
     }
 }
 
@@ -665,26 +693,32 @@ fn parse_manifest_group(
     repo_name: &str,
     repo_full_name: &str,
     manifest_group: &[String],
-) -> Option<(String, crate::nukkit::NukkitPluginYml)> {
+) -> Result<Option<(String, crate::nukkit::NukkitPluginYml)>, String> {
+    let mut candidates = 0;
+    let mut missing = 0;
     for path in ordered_manifest_candidates(manifest_group) {
+        candidates += 1;
         let content = match client().get_file_content(owner, repo_name, path) {
             Ok(content) => content,
-            Err(e) => {
-                debug!(repo = %repo_full_name, manifest = %path, error = %e, "Failed to read manifest");
+            // 代码搜索/旧缓存给出的候选可能已从仓库删除,换下一个候选即可
+            Err(e) if e == "not found" => {
+                debug!(repo = %repo_full_name, manifest = %path, "Manifest no longer exists");
+                missing += 1;
                 continue;
             }
+            Err(e) => return Err(format!("Failed to read manifest {}: {}", path, e)),
         };
 
         if is_annotation_manifest_path(path) {
             match crate::nukkit::parse_plugin_meta(&content, path) {
-                Some(yml) => return Some((path.clone(), yml)),
+                Some(yml) => return Ok(Some((path.clone(), yml))),
                 None => {
                     debug!(repo = %repo_full_name, manifest = %path, "No usable @PluginMeta annotation");
                 }
             }
         } else {
             match crate::nukkit::NukkitPluginYml::from_str(&content) {
-                Ok(yml) => return Some((path.clone(), yml)),
+                Ok(yml) => return Ok(Some((path.clone(), yml))),
                 Err(e) => {
                     debug!(repo = %repo_full_name, manifest = %path, error = %e, "Failed to parse manifest");
                 }
@@ -692,7 +726,16 @@ fn parse_manifest_group(
         }
     }
 
-    None
+    // 树里还列着清单、内容却全部 404:更可能是 tree/contents 之间的竞态,
+    // 按瞬态错误处理,让 update 保留旧记录、下一轮再判定删除。
+    if candidates > 0 && missing == candidates {
+        return Err(format!(
+            "Manifest contents not found for {}",
+            repo_full_name
+        ));
+    }
+
+    Ok(None)
 }
 
 fn is_placeholder(s: &str) -> bool {
@@ -765,14 +808,8 @@ fn jar_display_name(stem: &str, names: &[&str]) -> String {
     stem.to_string()
 }
 
-/// 将 motci.cn 的最近成功构建合成为一条快照版本:
-/// - version 形如 `ci-{build}`,prerelease = true,追加在 GitHub Release 版本之后;
-/// - 时间戳为 Jenkins 毫秒,转换为秒;
-/// - 多模块仓库只认领文件名与插件名/仓库名边界匹配的 jar,认领不到则不合成;
-/// - published_at 不参与 project_updated_timestamp,避免 CI 构建刷"最近更新"。
-/// 可安装的 jar:Maven 的 -sources / -javadoc 附件不是插件,面板装上即坏,
-/// 单模块"认领全部 jar"与多模块的名称匹配都必须排除。
-fn is_installable_jar(filename: &str) -> bool {
+/// 可安装的 jar:Maven 的 -sources / -javadoc 附件不是插件,面板装上即坏。
+pub(crate) fn is_installable_jar(filename: &str) -> bool {
     let lower = filename.to_lowercase();
     lower.ends_with(".jar")
         && !lower
@@ -780,10 +817,178 @@ fn is_installable_jar(filename: &str) -> bool {
             .is_some_and(|stem| stem.ends_with("-sources") || stem.ends_with("-javadoc"))
 }
 
+fn jar_stem(filename: &str) -> &str {
+    let cut = filename.len().saturating_sub(4);
+    match (filename.get(..cut), filename.get(cut..)) {
+        (Some(stem), Some(ext)) if ext.eq_ignore_ascii_case(".jar") => stem,
+        _ => filename,
+    }
+}
+
+/// 分隔符分词,用于模块/目标名匹配:保留完整单词,
+/// 避免 "Coin" 误匹配另一个模块的 "CoinSystem"。
+fn jar_tokens(value: &str) -> Vec<String> {
+    value
+        .to_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// 平台词检测用分词,额外按 CamelCase 切开:
+/// "ShitBotSpigot" -> shit/bot/spigot,"PlanFabric" -> plan/fabric。
+/// 只用于判断“是不是别的平台”,不用于模块归属。
+fn jar_camel_tokens(value: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    for part in value.split(|c: char| !c.is_ascii_alphanumeric()) {
+        if part.is_empty() {
+            continue;
+        }
+        tokens.push(part.to_ascii_lowercase());
+        let chars: Vec<char> = part.chars().collect();
+        let mut start = 0;
+        for index in 1..chars.len() {
+            let prev = chars[index - 1];
+            if chars[index].is_uppercase() && (prev.is_lowercase() || prev.is_ascii_digit()) {
+                tokens.push(
+                    chars[start..index]
+                        .iter()
+                        .collect::<String>()
+                        .to_ascii_lowercase(),
+                );
+                start = index;
+            }
+        }
+        if start > 0 {
+            tokens.push(
+                chars[start..]
+                    .iter()
+                    .collect::<String>()
+                    .to_ascii_lowercase(),
+            );
+        }
+    }
+    tokens
+}
+
+/// 词边界匹配:别名按分隔符/CamelCase 拆成多个 token 时要求全部命中
+/// ("nukkit-mot" 能匹配 "NeverMiss-Nukkit-MOT-1.0",不会被拆开的单词误伤)。
+fn jar_matches_tokens(stem: &str, aliases: &[String]) -> bool {
+    let stem_tokens = jar_tokens(stem);
+    aliases.iter().any(|alias| {
+        let expected = jar_tokens(alias);
+        !expected.is_empty() && expected.iter().all(|part| stem_tokens.contains(part))
+    })
+}
+
+fn module_jar_tokens(manifest_path: &str) -> Vec<String> {
+    module_key_from_manifest_path(manifest_path)
+        .split('/')
+        .filter(|segment| segment.len() >= 4)
+        .map(|segment| segment.to_lowercase())
+        .collect()
+}
+
+fn target_jar_tokens(targets: &[String]) -> Vec<String> {
+    let mut tokens = Vec::new();
+    for target in targets {
+        let aliases: &[&str] = match target.as_str() {
+            "nkx" => &["nkx", "nukkitx", "nukkit", "nk"],
+            "nkmot" => &["nukkit-mot", "nkmot", "nk-mot"],
+            "pnx" => &["powernukkitx", "powernukkit", "pnx"],
+            "lumi" => &["lumi"],
+            _ => &[],
+        };
+        for alias in aliases {
+            tokens.push((*alias).to_string());
+        }
+    }
+    tokens
+}
+
+/// 明显属于其他平台(Spigot/Fabric/... )的产物,不应挂到 Nukkit 系条目上。
+const FOREIGN_PLATFORM_TOKENS: &[&str] = &[
+    "bukkit",
+    "spigot",
+    "paper",
+    "folia",
+    "fabric",
+    "forge",
+    "neoforge",
+    "velocity",
+    "bungee",
+    "bungeecord",
+    "sponge",
+    "hytale",
+    "minestom",
+];
+
+fn is_foreign_platform_jar(stem: &str, own_names: &[String]) -> bool {
+    let tokens = jar_camel_tokens(stem);
+    FOREIGN_PLATFORM_TOKENS.iter().any(|platform| {
+        // 插件/仓库/模块名里本身带平台词时不能据此判定归属
+        // (例如名为 PaperChat 的 Nukkit 插件)
+        tokens.iter().any(|token| token == platform)
+            && !own_names.iter().any(|name| name == platform)
+    })
+}
+
+/// 明确的运行时依赖/引擎 jar,不是插件本体。
+/// 仅在某 release 已有其它平台产物被剔除、且只剩这类文件时,才判定该
+/// release 对本模块没有可安装产物;仅仅文件名不同(如 BlockHunt)不算。
+const AUXILIARY_JAR_TOKENS: &[&str] = &["engine", "lib", "libs", "library", "dependencies", "deps"];
+
+fn is_auxiliary_jar(stem: &str) -> bool {
+    let tokens = jar_tokens(stem);
+    AUXILIARY_JAR_TOKENS
+        .iter()
+        .any(|token| tokens.iter().any(|part| part == token))
+}
+
+/// primary 的分层:本模块标识 > primary_target > 精确的插件/仓库名 >
+/// 带前缀的插件/仓库名 > 其它目标。同分时保留 release 资产顺序
+/// (与旧版“第一个文件”行为一致),不按体积猜。
+fn jar_primary_score(
+    filename: &str,
+    plugin_name: &str,
+    repo_name: &str,
+    manifest_path: &str,
+    targets: &[String],
+) -> u8 {
+    let stem = jar_stem(filename);
+    if jar_matches_tokens(stem, &module_jar_tokens(manifest_path)) {
+        return 6;
+    }
+    if targets.first().is_some_and(|primary| {
+        jar_matches_tokens(stem, &target_jar_tokens(std::slice::from_ref(primary)))
+    }) {
+        return 5;
+    }
+    if stem.eq_ignore_ascii_case(plugin_name.trim()) || stem.eq_ignore_ascii_case(repo_name.trim())
+    {
+        return 4;
+    }
+    if jar_name_matches(stem, plugin_name) || jar_name_matches(stem, repo_name) {
+        return 3;
+    }
+    if !targets.is_empty() && jar_matches_tokens(stem, &target_jar_tokens(&targets[1..])) {
+        return 2;
+    }
+    1
+}
+
+/// 将 motci.cn 的最近成功构建合成为一条快照版本:
+/// - version 形如 `ci-{build}`,prerelease = true;
+/// - 时间戳为 Jenkins 毫秒,转换为秒;
+/// - 多模块仓库只认领文件名带本模块标识的 jar,根模块回退到插件/仓库名;
+/// - published_at 不参与 project_updated_timestamp,避免 CI 构建刷"最近更新"。
 fn compose_motci_snapshot(
     build: &JenkinsBuildInfo,
     plugin_name: &str,
     repo_name: &str,
+    manifest_path: &str,
+    targets: &[String],
     is_multi_module: bool,
 ) -> Option<Version> {
     let jars: Vec<&(String, String)> = build
@@ -797,18 +1002,32 @@ fn compose_motci_snapshot(
     }
 
     let matched: Vec<&(String, String)> = if is_multi_module {
-        let matched: Vec<_> = jars
-            .iter()
-            .copied()
-            .filter(|(filename, _)| {
-                let stem = filename.trim_end_matches(".jar");
-                jar_name_matches(stem, plugin_name) || jar_name_matches(stem, repo_name)
-            })
-            .collect();
+        let mut module_tokens = module_jar_tokens(manifest_path);
+        module_tokens.extend(target_jar_tokens(targets));
+        let by_name = |(filename, _): &&(String, String)| {
+            let stem = jar_stem(filename);
+            jar_name_matches(stem, plugin_name) || jar_name_matches(stem, repo_name)
+        };
+        let matched: Vec<_> = if module_tokens.is_empty() {
+            // 根模块没有目录标识,只能按插件/仓库名认领
+            jars.iter().copied().filter(by_name).collect()
+        } else {
+            let by_module: Vec<_> = jars
+                .iter()
+                .copied()
+                .filter(|(filename, _)| jar_matches_tokens(jar_stem(filename), &module_tokens))
+                .collect();
+            if by_module.is_empty() {
+                // 产物名不带模块目录标识时回退到插件/仓库名(旧行为)
+                jars.iter().copied().filter(by_name).collect()
+            } else {
+                by_module
+            }
+        };
         if matched.is_empty() {
             debug!(
                 build = build.build_number,
-                "No motci artifact matches plugin name, skipping snapshot"
+                "No motci artifact matches module, skipping snapshot"
             );
             return None;
         }
@@ -820,7 +1039,7 @@ fn compose_motci_snapshot(
     let names = [plugin_name, repo_name];
     let display_name = matched
         .first()
-        .map(|(filename, _)| jar_display_name(filename.trim_end_matches(".jar"), &names))
+        .map(|(filename, _)| jar_display_name(jar_stem(filename), &names))
         .unwrap_or_else(|| format!("ci-{}", build.build_number));
 
     Some(Version {
@@ -830,11 +1049,12 @@ fn compose_motci_snapshot(
         changelog: String::new(),
         files: matched
             .iter()
-            .map(|(filename, relative_path)| VersionFile {
+            .enumerate()
+            .map(|(index, (filename, relative_path))| VersionFile {
                 filename: filename.clone(),
                 url: artifact_url(&build.job_url, build.build_number, relative_path),
                 size: 0,
-                primary: true,
+                primary: index == 0,
                 sha256: None,
             })
             .collect(),
@@ -843,21 +1063,122 @@ fn compose_motci_snapshot(
     })
 }
 
-/// release 中可作为安装产物的 .jar 资产。这是"可安装版本"的唯一判定口径,
-/// update 的版本消失复查也依赖它,修改时两处语义必须保持一致
-pub(crate) fn release_jar_files(release: &Release) -> Vec<VersionFile> {
-    release
+/// 按发布时间倒序。GitHub releases 列表按创建顺序返回,不等于发布时间顺序。
+fn sort_versions_newest_first(versions: &mut [Version]) {
+    versions.sort_by(|a, b| b.published_at.cmp(&a.published_at));
+}
+
+/// release 中属于本模块、可安装的 .jar 资产。
+/// 排除 -sources/-javadoc 附件与明显属于其他平台的产物(插件/仓库/模块名里
+/// 自带平台词时豁免);模块标识与运行目标用于挑选唯一的 primary,并放到首位。
+/// 筛选后为空说明该 release 对本模块没有可安装产物,整个版本不产出。
+fn release_version_files(
+    release: &Release,
+    plugin_name: &str,
+    repo_name: &str,
+    manifest_path: &str,
+    targets: &[String],
+) -> Vec<VersionFile> {
+    let installable: Vec<&ReleaseAsset> = release
         .assets
         .iter()
-        .filter(|a| a.name.ends_with(".jar"))
-        .map(|a| VersionFile {
-            filename: a.name.clone(),
-            url: a.browser_download_url.clone(),
-            size: a.size,
-            primary: true,
-            sha256: sha256_from_digest(a.digest.as_deref()),
+        .filter(|asset| is_installable_jar(&asset.name))
+        .collect();
+
+    if installable.is_empty() {
+        return Vec::new();
+    }
+
+    let own_names: Vec<String> = jar_camel_tokens(plugin_name)
+        .into_iter()
+        .chain(jar_camel_tokens(repo_name))
+        .chain(jar_camel_tokens(&module_key_from_manifest_path(
+            manifest_path,
+        )))
+        .collect();
+
+    let selected: Vec<&ReleaseAsset> = installable
+        .iter()
+        .copied()
+        .filter(|asset| !is_foreign_platform_jar(jar_stem(&asset.name), &own_names))
+        .collect();
+
+    if selected.is_empty() {
+        return Vec::new();
+    }
+
+    // 多模块仓库:有本模块标识的产物时只保留这些,避免把其他模块的 jar
+    // 挂到本模块;产物名不含模块标识时保持现有集合(名称回退)。
+    let module_tokens = module_jar_tokens(manifest_path);
+    let module_specific: Vec<&ReleaseAsset> = if module_tokens.is_empty() {
+        Vec::new()
+    } else {
+        selected
+            .iter()
+            .copied()
+            .filter(|asset| jar_matches_tokens(jar_stem(&asset.name), &module_tokens))
+            .collect()
+    };
+    let selected: Vec<&ReleaseAsset> = if module_specific.is_empty() {
+        selected
+    } else {
+        module_specific
+    };
+
+    // 同分时保留 release 资产顺序,不按体积猜平台。
+    let mut primary = 0;
+    let mut primary_score = 0;
+    for (index, asset) in selected.iter().enumerate() {
+        let score = jar_primary_score(&asset.name, plugin_name, repo_name, manifest_path, targets);
+        if score > primary_score {
+            primary = index;
+            primary_score = score;
+        }
+    }
+
+    // 有其它平台产物被剔除、剩下的又全是引擎/依赖 jar,且没有任何文件能与
+    // 插件/模块/目标关联:该 release 没有本模块的插件本体,不产出版本。
+    // primary_score > 1 说明至少有一个文件是插件本体的候选,不能丢。
+    if selected.len() < installable.len()
+        && primary_score == 1
+        && selected
+            .iter()
+            .all(|asset| is_auxiliary_jar(jar_stem(&asset.name)))
+    {
+        return Vec::new();
+    }
+
+    // primary 放到第一位:前端多处用 files[0] 兜底,避免出现两个“主文件”。
+    let mut ordered: Vec<&ReleaseAsset> = Vec::with_capacity(selected.len());
+    ordered.push(selected[primary]);
+    for (index, asset) in selected.iter().enumerate() {
+        if index != primary {
+            ordered.push(asset);
+        }
+    }
+
+    ordered
+        .iter()
+        .enumerate()
+        .map(|(index, asset)| VersionFile {
+            filename: asset.name.clone(),
+            url: asset.browser_download_url.clone(),
+            size: asset.size,
+            primary: index == 0,
+            sha256: sha256_from_digest(asset.digest.as_deref()),
         })
         .collect()
+}
+
+/// update 的版本消失复查与 builder 共用同一判定,避免两套口径分叉。
+pub(crate) fn release_has_module_files(
+    release: &Release,
+    plugin_name: &str,
+    repo_name: &str,
+    manifest_path: &str,
+    targets: &[String],
+) -> bool {
+    !release_version_files(release, plugin_name, repo_name, manifest_path, targets).is_empty()
 }
 
 fn nukkit_yml_to_plugin(
@@ -876,6 +1197,7 @@ fn nukkit_yml_to_plugin(
     manifest_path: &str,
     target_detection: &TargetDetection,
     is_multi_module: bool,
+    tree: &[GitTreeEntry],
 ) -> Option<Plugin> {
     let ctx = PostProcessContext {
         owner,
@@ -883,7 +1205,7 @@ fn nukkit_yml_to_plugin(
         branch,
     };
 
-    let (processed_readme, mut gallery) = process_readme(readme, &ctx);
+    let (processed_readme, mut gallery) = process_readme(readme, &ctx, tree);
     gallery.extend(repo_gallery);
 
     let authors = resolve_authors(repo, contributors);
@@ -904,17 +1226,37 @@ fn nukkit_yml_to_plugin(
         dependency_type: "optional".to_string(),
     }));
 
-    // Build versions from releases
+    // Handle placeholder names by falling back to repo name
+    let plugin_name = if is_placeholder(&yml.name) || yml.name.trim().is_empty() {
+        debug!(
+            repo = %repo.full_name,
+            original = %yml.name,
+            "Using repo name as fallback for placeholder"
+        );
+        repo_name.to_string()
+    } else {
+        yml.name.trim().to_string()
+    };
+
+    // Build versions from releases;草稿 release 没有发布时间,也不可安装。
+    // GitHub 返回顺序不是发布时间顺序,这里统一按 published_at 倒序。
     let mut versions: Vec<Version> = releases
         .iter()
+        .filter(|release| !release.draft)
         .filter_map(|release| {
-            let files = release_jar_files(release);
+            let files = release_version_files(
+                release,
+                &plugin_name,
+                repo_name,
+                manifest_path,
+                &target_detection.targets,
+            );
 
             if files.is_empty() {
                 debug!(
                     repo = %repo.full_name,
                     release = %release.tag_name,
-                    "Skipping release without .jar assets"
+                    "Skipping release without installable .jar assets"
                 );
                 return None;
             }
@@ -940,22 +1282,16 @@ fn nukkit_yml_to_plugin(
         .filter(|v| !v.is_empty() && !is_placeholder(v))
         .unwrap_or_else(|| "unknown".to_string());
 
-    // Handle placeholder names by falling back to repo name
-    let plugin_name = if is_placeholder(&yml.name) || yml.name.trim().is_empty() {
-        debug!(
-            repo = %repo.full_name,
-            original = %yml.name,
-            "Using repo name as fallback for placeholder"
-        );
-        repo_name.to_string()
-    } else {
-        yml.name.trim().to_string()
-    };
-
     // motci CI 快照:GitHub 数据为准,motci 命中的仓库追加一条快照下载版本
     if let Some(build) = crate::jenkins::jenkins_index().get(&repo.full_name)
-        && let Some(snapshot) =
-            compose_motci_snapshot(build, &plugin_name, repo_name, is_multi_module)
+        && let Some(snapshot) = compose_motci_snapshot(
+            build,
+            &plugin_name,
+            repo_name,
+            manifest_path,
+            &target_detection.targets,
+            is_multi_module,
+        )
         && versions.iter().all(|v| v.version != snapshot.version)
     {
         debug!(
@@ -965,6 +1301,8 @@ fn nukkit_yml_to_plugin(
         );
         versions.push(snapshot);
     }
+    // 快照也参与排序,最终 versions 始终按发布时间倒序。
+    sort_versions_newest_first(&mut versions);
 
     let summary = match yml.description.as_deref().map(str::trim) {
         Some(text) if !text.is_empty() && !is_placeholder(text) => text.to_string(),
@@ -1064,14 +1402,16 @@ mod tests {
     use super::{
         BuildOptions, build_plugin_id, categories_from_topics, combine_categories,
         compose_motci_snapshot, detect_categories_with_classifier,
-        detect_targets_from_build_content, detect_targets_from_topics, group_manifest_paths,
-        is_annotation_manifest_path, is_plugin_manifest_path, jar_display_name, jar_name_matches,
-        manifest_implied_targets, module_key_from_manifest_path, ordered_manifest_candidates,
-        parse_timestamp, project_updated_timestamp, resolve_authors, select_primary_manifest_path,
-        sha256_from_digest,
+        detect_targets_from_build_content, detect_targets_from_topics, find_build_file_paths,
+        group_manifest_paths, is_annotation_manifest_path, is_plugin_manifest_path,
+        jar_display_name, jar_name_matches, manifest_implied_targets,
+        module_key_from_manifest_path, ordered_manifest_candidates, parse_timestamp,
+        project_updated_timestamp, release_version_files, resolve_authors,
+        select_primary_manifest_path, sha256_from_digest, sort_versions_newest_first,
     };
-    use crate::github::{Contributor, Owner, Release, Repository};
+    use crate::github::{Contributor, GitTreeEntry, Owner, Release, ReleaseAsset, Repository};
     use crate::jenkins::JenkinsBuildInfo;
+    use crate::plugin::Version;
 
     fn motci_build(job_url: &str, artifacts: &[(&str, &str)]) -> JenkinsBuildInfo {
         JenkinsBuildInfo {
@@ -1110,6 +1450,7 @@ mod tests {
             default_branch: Some("main".to_string()),
             contributors_url: String::new(),
             parent: None,
+            private: false,
         }
     }
 
@@ -1158,7 +1499,15 @@ mod tests {
             )],
         );
 
-        let snapshot = compose_motci_snapshot(&build, "Radio", "Radio", false).expect("snapshot");
+        let snapshot = compose_motci_snapshot(
+            &build,
+            "Radio",
+            "Radio",
+            "src/main/resources/plugin.yml",
+            &["nkx".to_string()],
+            false,
+        )
+        .expect("snapshot");
 
         assert_eq!(snapshot.version, "ci-60");
         assert_eq!(snapshot.name, "1.2.0-SNAPSHOT");
@@ -1185,7 +1534,15 @@ mod tests {
             ],
         );
 
-        let snapshot = compose_motci_snapshot(&build, "Foo", "Foo", false).expect("snapshot");
+        let snapshot = compose_motci_snapshot(
+            &build,
+            "Foo",
+            "Foo",
+            "src/main/resources/plugin.yml",
+            &["nkx".to_string()],
+            false,
+        )
+        .expect("snapshot");
         assert_eq!(snapshot.files.len(), 1);
         assert_eq!(snapshot.files[0].filename, "Foo-1.0.jar");
     }
@@ -1201,11 +1558,19 @@ mod tests {
                 ("Foo-1.0-javadoc.jar", "target/Foo-1.0-javadoc.jar"),
             ],
         );
-        let snapshot = compose_motci_snapshot(&single, "Foo", "Foo", false).expect("snapshot");
+        let snapshot = compose_motci_snapshot(
+            &single,
+            "Foo",
+            "Foo",
+            "src/main/resources/plugin.yml",
+            &["nkx".to_string()],
+            false,
+        )
+        .expect("snapshot");
         assert_eq!(snapshot.files.len(), 1);
         assert_eq!(snapshot.files[0].filename, "Foo-1.0.jar");
 
-        // 多模块路径:名称匹配能命中 "Coin-1.0-sources",仍必须排除
+        // 多模块路径:模块标识命中 "Coin-1.0-sources" 时仍必须排除附件
         let multi = motci_build(
             "https://motci.cn/job/Multi",
             &[
@@ -1213,7 +1578,15 @@ mod tests {
                 ("Coin-1.0-sources.jar", "Coin/target/Coin-1.0-sources.jar"),
             ],
         );
-        let snapshot = compose_motci_snapshot(&multi, "Coin", "MultiRepo", true).expect("snapshot");
+        let snapshot = compose_motci_snapshot(
+            &multi,
+            "Coin",
+            "MultiRepo",
+            "coin/src/main/resources/plugin.yml",
+            &["nkx".to_string()],
+            true,
+        )
+        .expect("snapshot");
         assert_eq!(snapshot.files.len(), 1);
         assert_eq!(snapshot.files[0].filename, "Coin-1.0.jar");
     }
@@ -1231,8 +1604,15 @@ mod tests {
             ],
         );
 
-        let snapshot =
-            compose_motci_snapshot(&build, "DCurrency", "MultiRepo", true).expect("snapshot");
+        let snapshot = compose_motci_snapshot(
+            &build,
+            "DCurrency",
+            "MultiRepo",
+            "dcurrency/src/main/resources/plugin.yml",
+            &["nkx".to_string()],
+            true,
+        )
+        .expect("snapshot");
         assert_eq!(snapshot.files.len(), 1);
         assert_eq!(snapshot.files[0].filename, "DCurrency-1.0.0.jar");
         assert_eq!(snapshot.name, "1.0.0");
@@ -1249,13 +1629,74 @@ mod tests {
             &[("CoinSystem-1.0.jar", "CoinSystem/target/CoinSystem-1.0.jar")],
         );
 
-        assert!(compose_motci_snapshot(&build, "Coin", "MultiRepo", true).is_none());
+        assert!(
+            compose_motci_snapshot(
+                &build,
+                "Coin",
+                "MultiRepo",
+                "coin/src/main/resources/plugin.yml",
+                &["nkx".to_string()],
+                true,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn motci_snapshot_root_module_falls_back_to_repo_name() {
+        let build = motci_build(
+            "https://motci.cn/job/Multi",
+            &[("MultiRepo-1.0.jar", "MultiRepo/target/MultiRepo-1.0.jar")],
+        );
+
+        let snapshot = compose_motci_snapshot(
+            &build,
+            "MultiRepo",
+            "MultiRepo",
+            "src/main/resources/plugin.yml",
+            &["nkx".to_string()],
+            true,
+        )
+        .expect("snapshot");
+
+        assert_eq!(snapshot.files.len(), 1);
+        assert!(snapshot.files[0].primary);
+    }
+
+    #[test]
+    fn motci_snapshot_falls_back_to_plugin_name_when_module_is_not_in_artifact() {
+        let build = motci_build(
+            "https://motci.cn/job/Multi",
+            &[("ShitBotNukkit-1.2.5.jar", "target/ShitBotNukkit-1.2.5.jar")],
+        );
+
+        let snapshot = compose_motci_snapshot(
+            &build,
+            "ShitBotNukkit",
+            "ShitBot",
+            "modules/platforms/nukkit/src/main/resources/plugin.yml",
+            &["nkmot".to_string()],
+            true,
+        )
+        .expect("snapshot");
+
+        assert_eq!(snapshot.files[0].filename, "ShitBotNukkit-1.2.5.jar");
     }
 
     #[test]
     fn motci_snapshot_requires_jar_artifacts() {
         let build = motci_build("https://motci.cn/job/Foo", &[("notes.txt", "notes.txt")]);
-        assert!(compose_motci_snapshot(&build, "Foo", "Foo", false).is_none());
+        assert!(
+            compose_motci_snapshot(
+                &build,
+                "Foo",
+                "Foo",
+                "src/main/resources/plugin.yml",
+                &["nkx".to_string()],
+                false,
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -1772,5 +2213,353 @@ mod tests {
             project_updated_timestamp(&repo, &[]),
             parse_timestamp("2026-05-01T00:00:00Z")
         );
+    }
+
+    fn release_with_assets(tag: &str, assets: &[(&str, u64)]) -> Release {
+        Release {
+            id: 1,
+            tag_name: tag.to_string(),
+            name: None,
+            body: None,
+            prerelease: false,
+            draft: false,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            published_at: "2024-01-01T00:00:00Z".to_string(),
+            assets: assets
+                .iter()
+                .enumerate()
+                .map(|(index, (name, size))| ReleaseAsset {
+                    id: index as u64,
+                    name: (*name).to_string(),
+                    size: *size,
+                    download_count: 0,
+                    browser_download_url: format!(
+                        "https://github.com/owner/repo/releases/download/{}/{}",
+                        tag, name
+                    ),
+                    content_type: "application/java-archive".to_string(),
+                    digest: None,
+                })
+                .collect(),
+        }
+    }
+
+    fn version_at(name: &str, published_at: u64) -> Version {
+        Version {
+            version: name.to_string(),
+            name: name.to_string(),
+            prerelease: false,
+            changelog: String::new(),
+            files: Vec::new(),
+            downloads: 0,
+            published_at,
+        }
+    }
+
+    #[test]
+    fn release_files_exclude_attachments_and_foreign_platform_jars() {
+        let release = release_with_assets(
+            "v1.0.0",
+            &[
+                ("Thing-1.0.0.jar", 10),
+                ("Thing-1.0.0-sources.jar", 5),
+                ("Thing-Bukkit-1.0.0.jar", 20),
+                ("Thing-Nukkit-1.0.0.jar", 30),
+            ],
+        );
+
+        let files = release_version_files(
+            &release,
+            "Thing",
+            "thing-repo",
+            "src/main/resources/plugin.yml",
+            &["nkx".to_string(), "nkmot".to_string()],
+        );
+
+        let names: Vec<&str> = files.iter().map(|file| file.filename.as_str()).collect();
+        assert_eq!(names, vec!["Thing-Nukkit-1.0.0.jar", "Thing-1.0.0.jar"]);
+        assert_eq!(files.iter().filter(|file| file.primary).count(), 1);
+        assert!(files[0].primary);
+        assert_eq!(files[0].filename, "Thing-Nukkit-1.0.0.jar");
+    }
+
+    #[test]
+    fn release_files_put_module_jar_first_and_drop_other_platforms() {
+        let release = release_with_assets(
+            "v1.5.0",
+            &[
+                ("KraftLink-API-1.5.0.jar", 7),
+                ("KraftLink-Bukkit-1.5.0.jar", 481),
+                ("KraftLink-Nukkit-1.5.0.jar", 470),
+                ("KraftLink.jar", 900),
+            ],
+        );
+
+        let files = release_version_files(
+            &release,
+            "KraftLink",
+            "KraftLink",
+            "nukkit/src/main/resources/nukkit.yml",
+            &["nkx".to_string(), "nkmot".to_string(), "pnx".to_string()],
+        );
+
+        let names: Vec<&str> = files.iter().map(|file| file.filename.as_str()).collect();
+        assert_eq!(names, vec!["KraftLink-Nukkit-1.5.0.jar"]);
+        assert!(files[0].primary);
+    }
+
+    #[test]
+    fn release_files_drop_all_foreign_platform_jars() {
+        let release = release_with_assets(
+            "5.5.11",
+            &[
+                ("LuckPerms-Fabric-5.5.11.jar", 100),
+                ("LuckPerms-NeoForge-5.5.11.jar", 100),
+            ],
+        );
+
+        let files = release_version_files(
+            &release,
+            "LuckPerms",
+            "LuckPerms",
+            "nukkit/loader/src/main/resources/plugin.yml",
+            &["nkx".to_string(), "nkmot".to_string()],
+        );
+
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn camel_case_platform_suffix_is_recognised() {
+        let release = release_with_assets(
+            "1.2.5",
+            &[
+                ("ShitBotApi-1.2.5.jar", 10),
+                ("ShitBotBungee-1.2.5.jar", 20),
+                ("ShitBotNukkit-1.2.5.jar", 30),
+                ("ShitBotRenderer-1.2.5.jar", 40),
+                ("ShitBotSpigot-1.2.5.jar", 50),
+                ("ShitBotVelocity-1.2.5.jar", 60),
+            ],
+        );
+
+        let files = release_version_files(
+            &release,
+            "ShitBotNukkit",
+            "ShitBot",
+            "modules/platforms/nukkit/src/main/resources/plugin.yml",
+            &["nkmot".to_string()],
+        );
+
+        let names: Vec<&str> = files.iter().map(|file| file.filename.as_str()).collect();
+        // CamelCase 平台词被剔除;拼接式产物名匹配不到模块目录标识,
+        // 因此 API/Renderer 仍保留,但 primary 必须是 Nukkit 本体。
+        assert_eq!(
+            names,
+            vec![
+                "ShitBotNukkit-1.2.5.jar",
+                "ShitBotApi-1.2.5.jar",
+                "ShitBotRenderer-1.2.5.jar"
+            ]
+        );
+        assert!(files[0].primary);
+    }
+
+    #[test]
+    fn primary_prefers_primary_target_over_other_targets() {
+        let release = release_with_assets(
+            "1.4.3",
+            &[
+                ("Whitelister-1.4.3-Nukkit.jar", 76401),
+                ("Whitelister-1.4.3-PNX.jar", 76403),
+            ],
+        );
+
+        let files = release_version_files(
+            &release,
+            "Whitelister",
+            "Whitelister",
+            "src/main/resources/plugin.yml",
+            &["nkx".to_string(), "nkmot".to_string(), "pnx".to_string()],
+        );
+
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].filename, "Whitelister-1.4.3-Nukkit.jar");
+        assert!(files[0].primary);
+    }
+
+    #[test]
+    fn primary_keeps_asset_order_when_no_name_matches() {
+        let release = release_with_assets(
+            "1.0.0",
+            &[("small-first.jar", 10), ("large-second.jar", 900)],
+        );
+
+        let files = release_version_files(
+            &release,
+            "Unrelated",
+            "unrelated-repo",
+            "src/main/resources/plugin.yml",
+            &["nkx".to_string()],
+        );
+
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].filename, "small-first.jar");
+        assert!(files[0].primary);
+    }
+
+    #[test]
+    fn primary_prefers_exact_plugin_name_over_prefixed_library() {
+        let release = release_with_assets(
+            "v1.3.3",
+            &[
+                ("KraftLink-API-1.3.3.jar", 7),
+                ("KraftLink-Bukkit-1.3.3.jar", 481),
+                ("KraftLink.jar", 900),
+            ],
+        );
+
+        let files = release_version_files(
+            &release,
+            "KraftLink",
+            "KraftLink",
+            "nukkit/src/main/resources/nukkit.yml",
+            &["nkx".to_string()],
+        );
+
+        let names: Vec<&str> = files.iter().map(|file| file.filename.as_str()).collect();
+        assert_eq!(names, vec!["KraftLink.jar", "KraftLink-API-1.3.3.jar"]);
+        assert!(files[0].primary);
+    }
+
+    #[test]
+    fn release_with_only_engine_jars_after_platform_filter_has_no_files() {
+        let release = release_with_assets(
+            "v1.18.1",
+            &[
+                ("HuHoBot-Engine-GraalJs-1.18.1.jar", 10),
+                ("HuHoBot-Engine-GraalPy-1.18.1.jar", 20),
+                ("HuHoBot-Penguin_Spigot-1.18.1.jar", 30),
+            ],
+        );
+
+        let files = release_version_files(
+            &release,
+            "HuHoBotPenguin",
+            "PenguinAgent",
+            "server/Nukkit/src/main/resources/plugin.yml",
+            &["nkx".to_string(), "nkmot".to_string()],
+        );
+
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn plugin_named_engine_is_not_dropped_as_auxiliary() {
+        let release = release_with_assets(
+            "v1.0",
+            &[("Engine-1.0.jar", 10), ("Engine-Bukkit-1.0.jar", 20)],
+        );
+
+        let files = release_version_files(
+            &release,
+            "Engine",
+            "Engine",
+            "src/main/resources/plugin.yml",
+            &["nkx".to_string()],
+        );
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].filename, "Engine-1.0.jar");
+    }
+
+    #[test]
+    fn plugin_name_with_platform_word_is_not_treated_as_foreign() {
+        let release = release_with_assets("v1.0", &[("PaperBridge-1.0.jar", 10)]);
+
+        let files = release_version_files(
+            &release,
+            "PaperBridge",
+            "paperbridge",
+            "src/main/resources/plugin.yml",
+            &["nkx".to_string()],
+        );
+
+        assert_eq!(files.len(), 1);
+        assert!(files[0].primary);
+    }
+
+    #[test]
+    fn single_module_release_with_only_foreign_jars_has_no_files() {
+        let release = release_with_assets("v1.0", &[("Thing-Bukkit-1.0.jar", 10)]);
+
+        let files = release_version_files(
+            &release,
+            "Thing",
+            "thing",
+            "src/main/resources/plugin.yml",
+            &["nkx".to_string()],
+        );
+
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn multi_module_keeps_jars_whose_platform_word_belongs_to_the_name() {
+        let release = release_with_assets(
+            "v1.0",
+            &[("PaperChat-1.0.jar", 10), ("PaperChat-Bukkit-1.0.jar", 20)],
+        );
+
+        let files = release_version_files(
+            &release,
+            "PaperChat",
+            "PaperChat",
+            "nukkit/src/main/resources/plugin.yml",
+            &["nkx".to_string()],
+        );
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].filename, "PaperChat-1.0.jar");
+        assert!(files[0].primary);
+    }
+
+    #[test]
+    fn versions_are_sorted_newest_first() {
+        let mut versions = vec![
+            version_at("old", 100),
+            version_at("new", 300),
+            version_at("mid", 200),
+        ];
+
+        sort_versions_newest_first(&mut versions);
+
+        let names: Vec<&str> = versions
+            .iter()
+            .map(|version| version.version.as_str())
+            .collect();
+        assert_eq!(names, vec!["new", "mid", "old"]);
+    }
+
+    #[test]
+    fn finds_build_file_with_different_case() {
+        let tree = vec![GitTreeEntry {
+            path: "tutorialplugin/build.gradle".to_string(),
+            entry_type: "blob".to_string(),
+            sha: String::new(),
+            size: None,
+        }];
+
+        let paths = find_build_file_paths(&tree, "TutorialPlugin/src/main/resources/plugin.yml");
+
+        assert_eq!(paths, vec!["tutorialplugin/build.gradle"]);
+    }
+
+    #[test]
+    fn rejects_non_manifest_filenames() {
+        assert!(!is_plugin_manifest_path("src/main/resources/myplugin.yml"));
+        assert!(!is_plugin_manifest_path(
+            "src/main/resources/not-plugin.yaml"
+        ));
     }
 }

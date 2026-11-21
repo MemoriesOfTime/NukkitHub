@@ -212,6 +212,10 @@ drop-in replacement**. What remains different:
 ## Data caveats
 
 - `downloads` is **always 0** today (reserved placeholder).
+- `files` lists only the jars installable for that plugin module: a release's
+  `-sources`/`-javadoc` attachments and artifacts belonging to other
+  platforms are omitted. Exactly one file carries `"primary": true` and it is
+  listed first.
 - `files[].hashes` carries `sha256` where the source provides a digest.
   GitHub only exposes digests for release assets uploaded since mid-2025;
   older assets, and `ci-{build}` CI artifacts, have `"hashes": {}`. The

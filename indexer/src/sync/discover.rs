@@ -1,4 +1,7 @@
-use super::builder::{build_plugins_from_nukkit_with_tree, find_plugin_manifest_paths};
+use super::builder::{
+    TREE_TRUNCATED, build_plugins_from_nukkit_with_tree, find_plugin_manifest_paths,
+    is_installable_jar,
+};
 use crate::github::{Repository, client};
 use crate::plugin::Plugin;
 use chrono::{Datelike, Duration, NaiveDate, Utc};
@@ -723,7 +726,15 @@ pub(crate) fn fork_has_own_versions(repo: &Repository) -> bool {
     };
     client()
         .get_releases(owner, name)
-        .map(|releases| !releases.is_empty())
+        .map(|releases| {
+            releases.iter().any(|release| {
+                !release.draft
+                    && release
+                        .assets
+                        .iter()
+                        .any(|asset| is_installable_jar(&asset.name))
+            })
+        })
         .unwrap_or(true)
 }
 
@@ -1039,6 +1050,10 @@ fn process_single_repo(repo_match: RepoMatch) -> Result<Vec<Plugin>, String> {
         Err(e) => return Err(e),
     };
 
+    if repo.private {
+        debug!(repo = %full_name, "Skip private repository");
+        return Ok(Vec::new());
+    }
     if repo.is_template {
         debug!(repo = %full_name, "Skip template");
         return Ok(Vec::new());
@@ -1086,7 +1101,20 @@ fn process_single_repo(repo_match: RepoMatch) -> Result<Vec<Plugin>, String> {
         return Ok(Vec::new());
     }
 
-    let mut plugins = build_plugins_from_nukkit_with_tree(&repo, &manifest_paths, prefetched_tree);
+    let mut plugins =
+        match build_plugins_from_nukkit_with_tree(&repo, &manifest_paths, prefetched_tree) {
+            Ok(plugins) => plugins,
+            Err(e) if e == TREE_TRUNCATED => {
+                warn!(repo = %full_name, "Tree truncated by GitHub, skipping repo");
+                return Ok(Vec::new());
+            }
+            Err(e) if e.contains("Rate limited") => return Err(e),
+            Err(e) => {
+                // 单个仓库的持久读取失败不应阻塞整轮 discover 的 last_sync
+                warn!(repo = %full_name, error = %e, "Build failed, skipping repo");
+                return Ok(Vec::new());
+            }
+        };
     if plugins.is_empty() {
         debug!(repo = %full_name, "No plugins built");
     }
@@ -1111,6 +1139,12 @@ fn find_plugin_manifests(
 
     match client().get_tree(owner, repo_name, branch) {
         Ok(tree) => {
+            if tree.truncated {
+                // 截断的树会漏掉模块清单;这是确定性结果,重试也无法恢复,
+                // 跳过该仓库而不是记为错误(否则会阻塞 last_sync 前进)
+                warn!(repo = %format!("{}/{}", owner, repo_name), "Tree truncated by GitHub, skipping repo");
+                return Ok(None);
+            }
             let tree_entries = tree.tree;
             let manifest_paths = find_plugin_manifest_paths(&tree_entries);
             Ok(Some((manifest_paths, tree_entries)))

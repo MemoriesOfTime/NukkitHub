@@ -1,6 +1,7 @@
 use super::auth::GitHubAppAuth;
 use super::types::*;
 use crate::cache::{CacheEntry, DataCache};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -23,6 +24,45 @@ const USER_AGENT: &str = concat!(
 );
 const GITHUB_PAGE_SIZE: usize = 100;
 const MAX_GITHUB_PAGES: usize = 100;
+
+/// GitHub 的草稿 release 会把 published_at 返回为 null,而 Release 的
+/// published_at 是 String(postcard 缓存布局不能随便改)。JSON 入口先宽松
+/// 解析成 RawRelease,再转成 Release;缓存与 DTO 布局保持不变。
+#[derive(Debug, Deserialize)]
+struct RawRelease {
+    id: u64,
+    tag_name: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    prerelease: bool,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    created_at: String,
+    #[serde(default)]
+    published_at: Option<String>,
+    #[serde(default)]
+    assets: Vec<ReleaseAsset>,
+}
+
+impl From<RawRelease> for Release {
+    fn from(raw: RawRelease) -> Self {
+        Self {
+            id: raw.id,
+            tag_name: raw.tag_name,
+            name: raw.name,
+            body: raw.body,
+            prerelease: raw.prerelease,
+            draft: raw.draft,
+            created_at: raw.created_at,
+            published_at: raw.published_at.unwrap_or_default(),
+            assets: raw.assets,
+        }
+    }
+}
 
 struct ResponseCache {
     repositories: HashMap<String, CacheEntry<Repository>>,
@@ -698,8 +738,9 @@ impl GitHubClient {
 
         let etag = cached.as_ref().and_then(|e| e.etag.as_deref());
 
-        match self.request_with_etag::<Vec<Release>>(&url, etag) {
+        match self.request_with_etag::<Vec<RawRelease>>(&url, etag) {
             Ok((data, new_etag)) => {
+                let data: Vec<Release> = data.into_iter().map(Release::from).collect();
                 let mut cache = self.cache.write().unwrap();
                 cache.releases.insert(
                     cache_key,
@@ -1446,6 +1487,25 @@ mod tests {
                 .as_deref(),
             Some("contributors-etag")
         );
+    }
+
+    #[test]
+    fn raw_release_tolerates_null_published_at() {
+        let raw: Vec<RawRelease> = serde_json::from_value(json!([
+            {
+                "id": 1,
+                "tag_name": "v2.5.3",
+                "draft": true,
+                "published_at": null,
+                "assets": []
+            }
+        ]))
+        .unwrap();
+
+        let releases: Vec<Release> = raw.into_iter().map(Release::from).collect();
+
+        assert!(releases[0].draft);
+        assert_eq!(releases[0].published_at, "");
     }
 }
 
